@@ -1,0 +1,112 @@
+name: Bug report
+description: Report reproducible ScreenWren behavior that is incorrect or unsafe.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve ScreenWren. Use synthetic or fully redacted images and text.
+
+        **Do not disclose a security vulnerability or attach private captures here.** Use the repository's **Security → Report a vulnerability** flow described in `SECURITY.md`.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and its impact.
+      placeholder: ScreenWren did…
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should have happened?
+      placeholder: I expected…
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include the exact capture command, selector gesture, and editor action.
+      placeholder: |
+        1. Launch ScreenWren…
+        2. Press…
+        3. Select…
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Region or window capture
+        - Timed or frozen capture
+        - Repeat or front-window capture
+        - OCR, detected codes, or subject lifting
+        - Scrolling capture
+        - Editor or markup
+        - Copy, save, drag, share, or pin
+        - Recents
+        - Permissions, shortcuts, or launch at login
+        - Build, signing, packaging, or QA
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: ScreenWren version or commit
+      description: Use the app version or `git rev-parse --short HEAD`.
+      placeholder: 0.5.0 or abc1234
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS and Mac
+      placeholder: macOS 26.x, Apple silicon
+    validations:
+      required: true
+
+  - type: dropdown
+    id: permission
+    attributes:
+      label: Screen Recording permission
+      options:
+        - Allowed
+        - Not allowed
+        - Not sure
+        - Not relevant
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Nonsensitive evidence
+      description: Add minimal logs, screenshots, or a recording after removing private pixels, OCR text, usernames, paths, and signing details.
+      render: shell
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Additional context
+      description: Include display arrangement/scale, clipboard manager, target app, or permission changes when relevant.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues for this behavior.
+          required: true
+        - label: I used synthetic or fully redacted evidence and included no credentials or private captures.
+          required: true
+        - label: This is not an undisclosed security vulnerability.
+          required: true

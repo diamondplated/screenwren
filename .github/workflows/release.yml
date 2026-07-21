@@ -1,0 +1,170 @@
+name: Draft notarized release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag matching Info.plist, for example v0.5.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: screenwren-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Sign and notarize
+    runs-on: macos-26
+    timeout-minutes: 40
+    environment: release
+
+    steps:
+      - name: Validate release tag syntax
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if ! grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' <<< "$RELEASE_TAG"; then
+            echo "Expected a stable semantic version tag such as v0.5.0" >&2
+            exit 1
+          fi
+
+      - name: Check out the requested tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify tag and version
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")"
+          VERSION=$(plutil -extract CFBundleShortVersionString raw Info.plist)
+          test "$RELEASE_TAG" = "v$VERSION"
+          test -z "$(git status --porcelain)"
+
+      - name: Verify release secrets are configured
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          DEVELOPER_ID_APPLICATION: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          test -n "$MACOS_CERTIFICATE_P12"
+          test -n "$MACOS_CERTIFICATE_PASSWORD"
+          test -n "$KEYCHAIN_PASSWORD"
+          test -n "$DEVELOPER_ID_APPLICATION"
+          test -n "$APPLE_ID"
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APPLE_APP_SPECIFIC_PASSWORD"
+
+      - name: Run tests
+        env:
+          SCREENWREN_SIGNING_IDENTITY: "-"
+        run: ./qa.sh
+
+      - name: Import Developer ID certificate
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          CERTIFICATE_PATH="$RUNNER_TEMP/screenwren-certificate.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/screenwren-signing.keychain-db"
+          printf '%s' "$MACOS_CERTIFICATE_P12" | base64 --decode > "$CERTIFICATE_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERTIFICATE_PATH" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH"
+
+      - name: Build and sign app
+        env:
+          SCREENWREN_SIGNING_IDENTITY: ${{ secrets.DEVELOPER_ID_APPLICATION }}
+        run: |
+          test -n "$SCREENWREN_SIGNING_IDENTITY"
+          ./build-app.sh
+          codesign --verify --strict --verbose=2 \
+            dist/ScreenWren.app/Contents/Library/LoginItems/ScreenWrenLoginItem.app
+          codesign --verify --deep --strict --verbose=2 dist/ScreenWren.app
+
+      - name: Submit to Apple notary service
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          VERSION=$(plutil -extract CFBundleShortVersionString raw Info.plist)
+          APP_PATH="dist/ScreenWren.app"
+          ARCHIVE_PATH="dist/ScreenWren-$VERSION.zip"
+
+          rm -f "$ARCHIVE_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+          xcrun notarytool submit "$ARCHIVE_PATH" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" \
+            --wait
+
+          xcrun stapler staple "$APP_PATH"
+          xcrun stapler validate "$APP_PATH"
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+          spctl --assess --type execute --verbose=2 "$APP_PATH"
+
+          rm -f "$ARCHIVE_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE_PATH"
+          (cd dist && shasum -a 256 "ScreenWren-$VERSION.zip" > "ScreenWren-$VERSION.zip.sha256")
+
+      - name: Store notarized release assets
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: screenwren-${{ inputs.tag }}
+          path: |
+            dist/ScreenWren-*.zip
+            dist/ScreenWren-*.zip.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  release:
+    name: Create draft release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+
+    steps:
+      - name: Retrieve notarized release assets
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: screenwren-${{ inputs.tag }}
+          path: dist
+
+      - name: Verify release assets
+        run: (cd dist && sha256sum -c ScreenWren-*.zip.sha256)
+
+      - name: Create an unpublished GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          VERSION=${RELEASE_TAG#v}
+          gh release create "$RELEASE_TAG" \
+            "dist/ScreenWren-$VERSION.zip" \
+            "dist/ScreenWren-$VERSION.zip.sha256" \
+            --draft \
+            --verify-tag \
+            --title "ScreenWren $VERSION" \
+            --generate-notes

@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: Swift, bundle, and self-checks
+    runs-on: macos-26
+    timeout-minutes: 25
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Validate property lists
+        run: |
+          plutil -lint Info.plist
+          plutil -lint LoginItem-Info.plist
+
+      - name: Run headless native QA
+        env:
+          SCREENWREN_SIGNING_IDENTITY: "-"
+        run: ./qa.sh
+
+      # SCREENWREN_LIVE_QA remains off on hosted runners:
+      # macOS TCC permission belongs to the exact signed app and user session.

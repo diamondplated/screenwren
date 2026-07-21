@@ -1,0 +1,72 @@
+name: Feature request
+description: Propose a focused improvement to ScreenWren's capture loop.
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ScreenWren is intentionally a fast, native, local-first capture tool. Start with the workflow problem rather than a proposed framework or architecture.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What workflow is difficult today?
+      description: Describe the real task, frequency, and friction.
+      placeholder: When I need to… I currently have to…
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should become faster, safer, or clearer?
+    validations:
+      required: true
+
+  - type: textarea
+    id: flow
+    attributes:
+      label: Suggested interaction
+      description: Include the exact command, gesture, menu location, and result if you have a proposal.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Capture speed or precision
+        - OCR or subject lifting
+        - Editor or markup
+        - Export or clipboard
+        - Permissions, shortcuts, or launch at login
+        - Accessibility
+        - Build or distribution
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Privacy and persistence impact
+      description: State whether the idea needs network access, persistent capture data, a new permission, or a third-party dependency.
+      placeholder: No new data or permission; processing can remain local…
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Could an existing ScreenWren command or native macOS feature solve the workflow?
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and `DESIGN.md` for this request.
+          required: true
+        - label: I understand that a proposal may be declined to keep the ordinary capture path fast and simple.
+          required: true
