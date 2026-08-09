@@ -29,6 +29,26 @@
 
 ---
 
+## Install
+
+```sh
+brew install --cask diamondplated/tap/screenwren
+```
+
+Or grab the zip from [Releases](https://github.com/diamondplated/screenwren/releases/latest).
+
+**macOS will block the first launch** — this build is ad-hoc signed, not notarized, because the
+project has no Apple Developer ID. Approve it once under **System Settings → Privacy & Security**,
+or strip the quarantine attribute yourself if you trust the build:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/ScreenWren.app
+```
+
+Building from source avoids the question entirely — see [below](#build-from-source).
+
+---
+
 ## The work between seeing something and using it
 
 Press **`⌃P`** from any app. Click a highlighted window or drag an exact region. Release.
