@@ -8,7 +8,7 @@ endpoint, or cloud service of its own.
 
 | Data | Why it is used | Where it goes | Lifetime |
 | --- | --- | --- | --- |
-| Selected region or exact-window pixels | Create the delivered capture you requested | Process memory, then the system clipboard and editor for ordinary image capture | Until replaced, closed, evicted, or ScreenWren quits; clipboard lifetime is controlled by macOS and other apps |
+| Selected region or exact-window pixels | Create the delivered capture you requested | Process memory, then the system clipboard by default; editor, pin, export, or review only according to the selected behavior | Until replaced, closed, evicted, or ScreenWren quits; clipboard lifetime is controlled by macOS and other apps |
 | Current pointer-display pixels | Supply the selector's precision loupe or a frozen screen from which you select afterward | Process memory only; only the final selection is delivered | Current selector/capture operation |
 | Visible window metadata | Highlight and capture an eligible window | Process memory only | Current selection/capture operation |
 | Last repeat target | Repeat the last successful region or exact window; an exact-window target retains its window ID, process ID, and bundle ID | Process memory only | Until replaced, invalidated, or ScreenWren quits |
@@ -16,7 +16,7 @@ endpoint, or cloud service of its own.
 | Detected code values and bounds | Make Instant Inspect code actions immediate; local detection starts automatically for every opened image | Apple's on-device Vision processing; process memory, then the system clipboard after Copy or the default app after an explicit Open action | Until the image revision is replaced, its editor closes, or ScreenWren quits; ScreenWren does not persist or fetch the value |
 | Foreground-subject analysis, mask, and image | Make Copy Subject available; local subject analysis starts automatically for every opened image | Apple's on-device VisionKit processing; process memory, then the system clipboard only after an explicit copy | Until the image revision is replaced, its editor closes, or ScreenWren quits; copied image data follows clipboard lifetime |
 | Edited image data | Render Copy, Save, Drag, Share, or Pin | Destination explicitly chosen by the user | Depends on the chosen destination |
-| Shortcut and readiness preferences | Remember the global keys and completed readiness setup you chose | The app's local macOS preferences domain | Until reset or the app's preferences are removed |
+| Shortcut, capture, and export preferences | Remember global keys, delivery behavior, selection size presets, export format/quality, and readiness setup | The app's local macOS preferences domain | Until reset or the app's preferences are removed |
 
 ScreenWren does not intentionally log captured pixels, recognized text, window
 titles, or capture geometry, and does not write them to its own on-disk store.
@@ -37,6 +37,10 @@ after a change. You can revoke access at any time in System Settings.
 ## Clipboard
 
 An ordinary image capture writes the resulting image to the General pasteboard.
+Save mode opens an export window without copying. Review mode withholds the raw
+image from both the clipboard and Recents until approval; only the reviewed,
+flattened result is copied. Cancelling review leaves the clipboard unchanged.
+Reviewing a previously copied capture cannot retract its earlier clipboard contents.
 Direct OCR and editor copy actions write only after their result is ready.
 ScreenWren checks for a newer clipboard owner before delayed work completes so it
 does not intentionally overwrite newer content.
@@ -52,7 +56,8 @@ behaviors are outside ScreenWren's control.
 - Editors retain the image and Undo state needed for the open window.
 - An active scrolling-capture session retains at most 20 frames and 256 MB of
   uncompressed pixel data until it is finished, cancelled, or ScreenWren quits.
-- Recents, pins, open editors, repeat state, and active scrolling sessions disappear
+- Text previews and redaction suggestions (including drawn masks) stay in memory. Recognition runs locally; suggested masks require review.
+- Recents, pins, open editors, previews, repeat state, and active scrolling sessions disappear
   when the ScreenWren process exits.
 
 Releasing memory is not a claim of forensic secure erasure from RAM, swap, crash
@@ -62,7 +67,7 @@ reports, or system snapshots.
 
 ScreenWren writes image data to a user-visible destination only when you:
 
-- confirm Save PNG;
+- confirm Save in a PNG/JPEG export or direct PNG save;
 - complete a PNG file drag; or
 - choose a macOS Share service that persists or transmits the item.
 

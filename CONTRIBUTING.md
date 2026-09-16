@@ -69,7 +69,7 @@ SCREENWREN_LIVE_QA=1 ./qa.sh
 
 Changes should preserve these boundaries:
 
-1. `⌃P → select → clipboard + editor` remains the shortest ordinary path.
+1. `⌃P → select → clipboard` remains the shortest ordinary path.
 2. Cancellation and pre-delivery failures do not change the clipboard.
 3. Stale asynchronous work does not open windows, add Recents, or overwrite newer
    clipboard content.

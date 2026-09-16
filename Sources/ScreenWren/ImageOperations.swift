@@ -163,6 +163,19 @@ func uncompressedByteEstimate(for image: CGImage) -> Int {
     return pixelOverflow || byteOverflow ? .max : bytes
 }
 
+func checkedScrollingMemoryUsage(
+    currentBytes: Int,
+    adding frameBytes: Int,
+    limit: Int = 256 * 1_024 * 1_024
+) throws -> Int {
+    guard currentBytes >= 0, frameBytes > 0, limit > 0 else {
+        throw ImageOperationsError.invalidDimensions
+    }
+    let (total, overflow) = currentBytes.addingReportingOverflow(frameBytes)
+    guard !overflow, total <= limit else { throw ImageOperationsError.outputTooLarge }
+    return total
+}
+
 func checkedScrollingOutputHeight(
     width: Int,
     currentHeight: Int,

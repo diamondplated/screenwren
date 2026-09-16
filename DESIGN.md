@@ -9,7 +9,7 @@ Platform: macOS 26 and newer
 ScreenWren is a fast, private screen-capture loop. Its primary promise is:
 
 ```text
-⌃P → select exact pixels → clipboard + editor
+⌃P → select exact pixels → clipboard
 ```
 
 The ordinary path must remain faster than opening a document editor. Capture
@@ -22,15 +22,16 @@ telemetry, or persistent capture history.
 - Prefer native macOS behavior and Apple frameworks over custom substitutes.
 - Capture only after an explicit command.
 - Preserve newer clipboard content instead of overwriting it after delayed work.
-- Keep image capture useful even when clipboard delivery is unavailable: the
-  capture still opens in the editor and appears in session Recents.
+- Keep image capture recoverable when clipboard delivery is unavailable. Copy
+  failures open an editor. If newer clipboard content prevents delivery, retain
+  the capture in Recents or open an editor when it exceeds the Recents memory cap.
 - Never silently substitute a different target when an exact repeat target is gone.
 - Treat opaque Redact as the privacy tool; label Blur as visual and not secure.
 - Keep cancellation and failure visible, bounded, and free of hidden disk writes.
 
 ## App surfaces
 
-ScreenWren is a menu-bar app with three focused surfaces:
+ScreenWren is a menu-bar app with focused native surfaces:
 
 1. **Readiness** explains Screen Recording permission, records global shortcuts,
    reports unavailable shortcuts, restores defaults, and controls Launch at Login.
@@ -39,11 +40,17 @@ ScreenWren is a menu-bar app with three focused surfaces:
 3. **Editor** provides PaperKit markup, local image intelligence, destructive image
    operations, and explicit export actions.
 
-The app has no library browser. Recents and pins exist only for the current process.
+4. **Capture Preferences** chooses delivery behavior, the optional thumbnail, exact sizes,
+   aspect ratio, and saved size presets.
+5. **Recent Captures** browses the existing five-image, memory-only collection and combines
+   selected captures. Export, text preview, and redaction review are explicit action windows.
+
+Recents, pins, and review windows exist only for the current process.
 
 ## Readiness, permission, and shortcuts
 
-The first ordinary launch presents **ScreenWren Readiness** before capture. It says
+Ordinary launch and reopening stay quiet in the menu bar. **ScreenWren Readiness**
+opens only from its menu command or when an explicit capture needs permission. It says
 what Screen Recording access enables, links to the relevant System Settings pane,
 distinguishes allowed, required, and relaunch-required states, and rechecks after
 ScreenWren becomes active. When macOS requires a restart after approval, Readiness
@@ -51,11 +58,19 @@ offers a helper-mediated **Quit & Reopen ScreenWren** action that waits for the 
 process to exit before starting the replacement. Starting through the login item
 stays quiet.
 
+Restart remains available whenever access is blocked; it does not depend on the
+system permission request returning a particular Boolean. An explicit permission
+request that leaves access unavailable opens System Settings. Check Again performs
+only a status check. Recovery instructions can reveal the exact running app copy
+for replacing a stale permission entry. A ScreenCaptureKit permission denial
+invalidates pending capture work, dismisses the selector, and overrides an allowed
+preflight result until relaunch. Approval never starts capture automatically.
+
 Screen Recording is the only capture permission. ScreenWren does not request
 Accessibility, microphone, Contacts, or Photos access. The wording remains honest
 that the precision loupe and Freeze feature temporarily inspect one display frame.
 
-Five capture commands can have global shortcuts:
+Capture commands, the recent picker, and pin visibility can have global shortcuts:
 
 | Command | Default |
 | --- | --- |
@@ -64,11 +79,15 @@ Five capture commands can have global shortcuts:
 | Repeat Last Capture | `⌃⌘⇧2` |
 | Capture Front Window | Unassigned |
 | Freeze Screen and Select | Unassigned |
+| Browse Recent Captures | `⌃⇧P` |
+| Hide / Restore All Pins | `⌃⌥P` |
 
 A recorded shortcut requires Command, Control, or Option. Escape cancels recording;
 Delete clears it. Conflicts within ScreenWren and registration failures are shown
 without discarding the prior working shortcut. Every command remains available from
 the menu when its shortcut is unassigned.
+On initialization, saved assignments take precedence over conflicting unconfigured
+defaults. Those defaults remain unassigned until explicitly changed or reset.
 
 Launch at Login uses macOS ServiceManagement and a bundled helper. The helper opens
 the main app only when it is not already running.
@@ -80,20 +99,28 @@ the General pasteboard, ScreenWren verifies both that the command is still curre
 and that another owner has not replaced the clipboard. A stale or cancelled command
 must not write, open an editor, add a Recent, or change the repeat target.
 
-An ordinary image capture produces one image, attempts one clipboard delivery, adds
-one memory-only Recent, and opens one editor. Direct OCR produces text only. A
+An ordinary image capture produces one image, attempts one clipboard delivery, and
+adds one memory-only Recent. The default opens no editor or thumbnail. Preferences
+can instead open an editor, pin the result, open an export window, or require
+redaction review. Review captures do not copy or enter Recents until explicit approval;
+Save mode opens an export window without copying. Direct OCR produces text only. A
 scrolling session collects frames without writing the clipboard and opens its
 stitched result for review before the user copies it.
 
-ScreenWren captures one display at a time. A region target retains its display ID,
-screen frame, scale, and global rectangle so geometry can be checked again. A window
-target is a ScreenCaptureKit window, not a crop of visible desktop pixels.
+A region target retains each intersected display's ID, frame, scale, and selected
+rectangle. Cross-display capture acquires the intersecting slices sequentially and
+composites them at the selector's common scale (the highest attached display scale).
+Lower-density slices are upscaled and gaps remain transparent. Geometry is checked
+before and after acquisition. Output is capped at 64 million pixels. A window target
+is a ScreenCaptureKit window, not a crop of visible desktop pixels.
 
 ## Selector and precision behavior
 
-Before dragging, the topmost eligible window under the pointer is highlighted.
-Click captures that exact window. Drag always creates a region. Tab and Shift-Tab
-cycle eligible windows; Return captures the highlighted window; Escape cancels.
+The selector starts with region crosshairs and no highlighted window. Space enables
+window snapping, highlighting the topmost eligible window under the pointer. In
+that mode, click captures that exact window, Tab and Shift-Tab cycle eligible
+windows, and Return captures the highlighted window. Drag always creates a region.
+Escape, pressing the capture shortcut again, or switching apps cancels the selector.
 
 Space has two deliberate meanings:
 
@@ -103,7 +130,14 @@ Space has two deliberate meanings:
 
 The selector reports live physical-pixel dimensions. Its pixel loupe is filled from
 one transient full-display frame and keeps its crosshair aligned at display edges.
-Selection is limited to the display under the pointer when capture begins.
+Ordinary, timed, and text selectors use synchronized windows on all displays. Freeze
+and scrolling selectors remain on one display. Only the current pointer display's
+loupe frame is retained; moving to another display requests a replacement.
+
+Holding Shift on release or enabling adjustment mode keeps a region active. Arrows
+move by one output pixel, Option–arrows resize, and Shift uses ten-pixel steps. Return
+confirms. Exact dimensions and named size presets are in Capture Preferences; aspect
+ratio constraints apply to free drags and keyboard resize.
 
 ## Capture modes
 
@@ -179,8 +213,24 @@ Finish actions are explicit:
 - **Copy** places the flattened edited image on the clipboard.
 - **Copy and Close** (`⌘Return`) closes only after a successful image clipboard
   write and does not intercept text entry or an attached sheet.
-- **Save PNG**, PNG file drag, and a chosen Share service may write image files.
-- **Pin Above Windows** creates a flattened, session-only floating image.
+- **Export Image** previews PNG/JPEG, original/1× dimensions, JPEG quality, and encoded size before Save. Direct PNG save, PNG file drag, and a chosen Share service remain available.
+- **Pin Above Windows** creates a flattened, session-only floating image with opacity, zoom, and click-through controls. A global shortcut hides/restores pins; the menu can unlock them.
+
+## Review, text preview, and composition
+
+Redaction review detects email/phone patterns and literal text locally. Matching
+recognized lines are masked conservatively, with optional manually drawn rectangles.
+Approval burns opaque pixels into a new flattened image. Cancellation copies nothing.
+The editor presents review as a sheet so edits cannot race with applying its snapshot.
+A clipboard ticket prevents approval's asynchronous rendering from overwriting newer
+clipboard ownership or a newer explicit copy. Suggestions are not a guarantee that
+all sensitive data has been found.
+
+Structured text preview infers table cells or code spacing from recognized word
+positions. The preview remains editable and only the Copy button delivers text.
+Combining two to five Recents retains chronological ordering and creates a vertical,
+horizontal, or grid image, with a 64-million-pixel output bound. Combination opens an
+editor and leaves the clipboard unchanged; closing the picker cancels pending work.
 
 ## Instant Inspect
 
@@ -226,8 +276,7 @@ pixels because that restriction belongs to the source/system path.
 
 ## Deliberate limits
 
-ScreenWren 0.5 does not include video or GIF capture, cross-display region dragging,
-automatic scrolling, cloud sync, accounts, a persistent library, a browser extension,
+ScreenWren does not include video or GIF capture, automatic scrolling, cloud sync, accounts, a persistent library, a browser extension,
 or an updater. OCR, barcode recognition, seam detection, and foreground-subject
 lifting are best-effort native analysis and can fail on ambiguous imagery.
 

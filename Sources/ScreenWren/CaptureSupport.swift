@@ -5,6 +5,7 @@ import ScreenCaptureKit
 enum CaptureIntent: Equatable, Sendable {
     case image
     case text
+    case structuredText
     case delayedImage(seconds: TimeInterval)
     case scrolling
 }
@@ -44,6 +45,14 @@ struct DisplayRegion: Equatable, Sendable {
 enum SelectionTarget {
     case region(DisplayRegion)
     case window(WindowCandidate)
+    case desktop(DesktopRegion)
+    var pixelScale: CGFloat {
+        switch self {
+        case .region(let region): region.scale
+        case .desktop(let region): region.plan.scale
+        case .window(let candidate): CGFloat(SCShareableContent.info(for: SCContentFilter(desktopIndependentWindow: candidate.window)).pointPixelScale)
+        }
+    }
 }
 
 struct WindowIdentity: Equatable, Sendable {
@@ -55,10 +64,11 @@ struct WindowIdentity: Equatable, Sendable {
 enum RepeatTarget: Equatable, Sendable {
     case region(DisplayRegion)
     case window(WindowIdentity)
+    case desktop(DesktopRegion)
 
     var menuTitle: String {
         switch self {
-        case .region: "Repeat Last Region"
+        case .region, .desktop: "Repeat Last Region"
         case .window: "Repeat Last Window"
         }
     }
@@ -66,6 +76,7 @@ enum RepeatTarget: Equatable, Sendable {
     init(_ target: SelectionTarget) {
         switch target {
         case let .region(region): self = .region(region)
+        case let .desktop(region): self = .desktop(region)
         case let .window(candidate): self = .window(candidate.identity)
         }
     }
@@ -135,6 +146,11 @@ func windowAlphaIsEligible(_ alpha: Double?) -> Bool {
     alpha.map { $0 > 0.01 } ?? true
 }
 
+func isScreenCapturePermissionError(_ error: Error) -> Bool {
+    let error = error as NSError
+    return error.domain == SCStreamErrorDomain && error.code == SCStreamError.Code.userDeclined.rawValue
+}
+
 enum CaptureSupportError: LocalizedError {
     case displayChanged
     case missingDisplay
@@ -200,6 +216,7 @@ func acquireScreenshot(for target: SelectionTarget) async throws -> CGImage {
 
     let output: SCScreenshotOutput
     switch target {
+    case let .desktop(region): return try await acquireDesktopScreenshot(for: region)
     case let .region(region):
         guard region.isValid else { throw CaptureSupportError.displayChanged }
         let (display, filter) = try await RegionCaptureFilterCache.shared.filter(for: region.displayID)
@@ -312,7 +329,7 @@ private extension CGRect {
 }
 
 @MainActor
-private extension NSScreen {
+extension NSScreen {
     var screenwrenDisplayID: CGDirectDisplayID? {
         (deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber).map { CGDirectDisplayID($0.uint32Value) }
     }

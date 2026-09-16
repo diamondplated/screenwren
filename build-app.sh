@@ -4,7 +4,23 @@ set -eu
 PROJECT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 DIST_DIR="$PROJECT_DIR/dist"
 APP_PATH="$DIST_DIR/ScreenWren.app"
-SIGNING_IDENTITY=${SCREENWREN_SIGNING_IDENTITY:--}
+SIGNING_IDENTITY_FILE="$PROJECT_DIR/.screenwren-signing-identity"
+if [ -n "${SCREENWREN_SIGNING_IDENTITY:-}" ]; then
+    SIGNING_IDENTITY=$SCREENWREN_SIGNING_IDENTITY
+elif [ -f "$SIGNING_IDENTITY_FILE" ]; then
+    SIGNING_IDENTITY=$(cat "$SIGNING_IDENTITY_FILE")
+    if [ -z "$SIGNING_IDENTITY" ]; then
+        echo "The saved signing identity is empty: $SIGNING_IDENTITY_FILE" >&2
+        exit 1
+    fi
+else
+    SIGNING_IDENTITY=-
+fi
+
+if [ "$SIGNING_IDENTITY" = "-" ]; then
+    echo "Local ad-hoc build: Screen Recording permission may need to be granted again after rebuilding." >&2
+    echo "Use a consistent SCREENWREN_SIGNING_IDENTITY to preserve permission across builds." >&2
+fi
 
 mkdir -p "$DIST_DIR"
 STAGING_DIR=$(mktemp -d "$DIST_DIR/.screenwren-build.XXXXXX")

@@ -5,3 +5,4 @@ dist/
 *.xcuserstate
 xcuserdata/
 DerivedData/
+.screenwren-signing-identity

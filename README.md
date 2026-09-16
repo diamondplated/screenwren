@@ -51,10 +51,13 @@ Building from source avoids the question entirely — see [below](#build-from-so
 
 ## The work between seeing something and using it
 
-Press **`⌃P`** from any app. Click a highlighted window or drag an exact region. Release.
+ScreenWren starts quietly in the menu bar. Press **`⌃P`** from any app for crosshairs,
+drag an exact region, and release. Press Space first if you want to select a window.
 
-It's already on your clipboard, and a native PaperKit editor is open in case you want to mark it up.
-That's the loop. It's meant to be over before you've thought about it.
+It's already on your clipboard. A successful default capture opens no editor or preview.
+Open **Capture Preferences…** to choose another destination or enable an optional thumbnail.
+If copying fails, an editor preserves the capture. When newer clipboard content
+prevents copying, the capture stays in Recents; images too large for Recents open in an editor.
 
 - ⚡ **One keystroke to clipboard.** No save dialog, no file to find, no "where did that go".
 - 🔒 **Nothing leaves your Mac.** No account, no cloud library, no analytics, no network service of
@@ -74,17 +77,20 @@ That's the loop. It's meant to be over before you've thought about it.
 ## The fast path
 
 1. Press `⌃P` from any app.
-2. Click a highlighted window, or drag a region.
-3. Paste immediately, or continue in the editor that opens.
+2. Drag a region with the crosshairs, or press Space and click a highlighted window.
+3. Paste immediately. To edit a capture, press `⌃⇧P`, select its thumbnail, and choose **Edit**.
 
 While the selector is open:
 
 | Key | Does |
 |---|---|
 | `Space` | switch between window snapping and region-only selection |
-| `Tab` / `⇧Tab` | move through eligible windows |
-| `Return` | capture the highlighted window |
-| `Esc` | cancel without touching the clipboard |
+| `Tab` / `⇧Tab` | move through eligible windows in window-selection mode |
+| `Return` | capture the highlighted window in window-selection mode |
+| `Shift` when releasing | keep the selection open for adjustments |
+| Arrow keys / `Option` + arrows | move / resize an adjustable selection; `Shift` uses larger steps |
+| `Return` in adjustment mode | capture the adjusted selection |
+| `Esc` / capture shortcut again | cancel without touching the clipboard |
 
 ---
 
@@ -92,16 +98,16 @@ While the selector is open:
 
 ### Capture
 
-- **Windows and regions.** Native ScreenCaptureKit window capture, or an exact drag.
+- **Windows and regions.** Native ScreenCaptureKit window capture, or an exact drag across one or several displays. Mixed-scale captures use a common pixel scale; gaps between displays are transparent.
 - **Front window, no selector.** Capture the frontmost eligible window immediately.
 - **Freeze first.** Freeze the display, then select from the frozen pixels — for menus and hover
   states that vanish the moment you move.
-- **Precision tools.** A pixel loupe, live dimensions, and hold-`Space` repositioning.
+- **Precision tools.** A pixel loupe, live dimensions, hold-`Space` repositioning, keyboard adjustment, exact pixel sizes, aspect-ratio locking, and saved size presets.
 - **Straight to text.** OCR a region without putting an image on the clipboard at all.
 - **Repeat.** Re-run the last valid region or exact window without reopening the selector.
 - **Timed.** Three-second delay for menus, tooltips, and hover states.
 - **Scrolling capture.** Guided, with conservative seam detection.
-- **Session-only recents.** Never a hidden screenshot library.
+- **Session-only recents.** A visual picker (`⌃⇧P`) for copying, editing, pinning, exporting, removing, and combining captures. Never a hidden screenshot library.
 
 ### Edit and finish
 
@@ -112,9 +118,34 @@ While the selector is open:
 - **Redaction.** Opaque rectangular redaction — plus a visual blur that is explicitly labeled
   **not secure**.
 - **Geometry.** Crop, aspect-preserving resize, 90° rotation, reset.
-- **Pin.** Float a flattened capture above ordinary windows.
-- **Finish.** Copy, save as PNG, drag out as PNG, or use the native Share menu — or copy and close
-  the editor in one command.
+- **Pin.** Float a flattened capture with opacity, zoom, and click-through controls. `⌃⌥P` hides or restores all pins. **Unlock All Pins** in the menu restores mouse interaction.
+- **Finish.** Copy, export PNG/JPEG with original or 1× resolution and an encoded-size preview,
+  drag out as PNG, or use the native Share menu. Copy and close the editor in one command.
+- **Redaction assistance.** Review suggested email, phone, and literal-text masks; draw additional
+  masks on the preview. Suggestions cover whole recognized lines and can miss content.
+- **Structured OCR.** Preview and correct plain text, tab-separated tables, or code with inferred
+  spacing before copying. Available from the capture menu and the editor's More menu.
+- **Combine.** Command-select two or more Recents and create a vertical, side-by-side, or grid
+  composition. The result opens for editing without changing the clipboard.
+
+### Capture preferences
+
+Choose **Capture Preferences…** from the menu-bar menu or the app menu (`⌥⌘,`).
+After capture, choose Copy only (default), Copy and open editor, Copy and pin,
+Save (opens an export window), or Review redactions before copying.
+The optional thumbnail offers Edit, Save, Pin, and PNG drag; it never takes keyboard
+focus and closes after six seconds. Starting another selection dismisses it.
+
+Review mode withholds the unreviewed image from the clipboard and Recents. Approving
+copies the flattened reviewed image, unless another clipboard action has overtaken
+it; in that case the reviewed image opens in the editor. Cancel leaves the clipboard
+unchanged. Use this mode **before** capturing private content: reviewing an image
+later in the editor cannot retract a copy already placed on the system clipboard.
+
+Exact sizes and presets are in physical output pixels. Oversized selections fit to
+the available desktop. Freeze and scrolling capture still use one display; ordinary,
+timed, and text selection can span displays. Display slices are captured sequentially,
+so moving content may differ slightly in time between monitors.
 
 ### Default shortcuts
 
@@ -123,6 +154,8 @@ While the selector is open:
 | Capture a window or region | `⌃P` |
 | Copy text from a selected target | `⌥⌘⇧2` |
 | Repeat the last valid region or window | `⌃⌘⇧2` |
+| Browse recent captures | `⌃⇧P` |
+| Hide / restore all pins | `⌃⌥P` |
 | Toggle Instant Inspect in the editor | `⇧⌘I` |
 | Copy text from the editor | `⇧⌘T` |
 | Copy a transparent subject from the editor | `⇧⌘L` |
@@ -132,6 +165,8 @@ While the selector is open:
 Every capture command is also in the menu-bar icon. Open **ScreenWren Readiness…** to change global
 shortcuts, see conflicts, restore defaults, and control Launch at Login. Front Window and Freeze
 start unassigned, so they don't claim a global key without your say-so.
+On upgrade, saved custom shortcuts take precedence: conflicting new defaults start
+unassigned until you assign a key or restore defaults.
 
 <details>
 <summary><strong>Inspect and canvas keys, in detail</strong></summary><br>
@@ -195,10 +230,34 @@ The build script creates a Universal 2 `dist/ScreenWren.app` and a versioned ZIP
 ad-hoc signed by default. A public distribution build must set `SCREENWREN_SIGNING_IDENTITY` to a
 Developer ID Application identity and be notarized.
 
-On first launch, **ScreenWren Readiness** explains the required Screen Recording permission and
-shows shortcut status. If capture is still blocked after enabling ScreenWren in **System Settings →
+Launch stays quiet. If your first capture needs permission, **ScreenWren Readiness** explains
+Screen Recording access and shows shortcut status. You can also open it from the menu-bar menu
+or **ScreenWren → Settings…** (⌘,) while an editor is open.
+If capture is still blocked after enabling ScreenWren in **System Settings →
 Privacy & Security → Screen & System Audio Recording**, choose **Quit & Reopen ScreenWren** in
 Readiness.
+
+If Settings already shows ScreenWren enabled but capture remains blocked, remove
+that old ScreenWren entry and add the running copy again using **Show This Copy in
+Finder** in Readiness. Then choose **Quit & Reopen ScreenWren**. **Check Again**
+refreshes the displayed status without starting a capture.
+
+Local ad-hoc signing changes the app's identity when its executable changes, so
+Screen Recording permission may need to be granted again after rebuilding. A
+consistent signing certificate avoids that identity change:
+
+```sh
+SCREENWREN_SIGNING_IDENTITY="Your code-signing certificate name" ./build-app.sh
+```
+
+This requires an existing valid code-signing certificate in your keychain.
+
+For development, the certificate name or SHA-1 fingerprint can also be saved as
+plain text in `.screenwren-signing-identity` at the repository root. This local
+file is ignored by Git and used by subsequent builds, including `qa.sh`, so they
+keep the same signing identity. `SCREENWREN_SIGNING_IDENTITY` overrides the saved
+value. An empty saved value fails the build instead of reverting to ad-hoc signing.
+The file contains only the certificate selector; the private key stays in Keychain.
 
 <details>
 <summary><strong>Verification harness</strong></summary><br>

@@ -114,7 +114,7 @@ if [ "$APP_PATH" != "$REFERENCE_APP" ]; then
     compare_bundle_contents "$REFERENCE_APP" "$APP_PATH"
 fi
 
-# This check exits before starting NSApplication, so it never presents app UI.
+# This check does not enter the app event loop or present app UI.
 "$APP_PATH/Contents/MacOS/ScreenWren" --self-check
 
 if [ "$LIVE_QA" = 1 ]; then
