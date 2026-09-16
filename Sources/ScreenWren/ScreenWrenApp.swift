@@ -260,7 +260,7 @@ func runSelfCheck() {
         let editor = EditorViewController(image: fixture, initialStatus: "QA") { _ in }
         editor.loadViewIfNeeded()
         let menuTitles = Set(editor.makeMoreMenu().items.map(\.title))
-        for expected in ["Redact…", "Blur (Not Secure)…", "Crop…", "Resize…", "Rotate Left", "Rotate Right", "Pin Above Windows", "Save PNG…"] {
+        for expected in ["Review Suggested Redactions…", "Preview Structured Text…", "Redact…", "Blur (Not Secure)…", "Crop…", "Resize…", "Rotate Left", "Rotate Right", "Pin Above Windows", "Export PNG / JPEG…", "Save PNG Directly…"] {
             precondition(menuTitles.contains(expected), "Missing editor command: \(expected)")
         }
         precondition(menuTitles.contains(where: { $0.localizedCaseInsensitiveContains("share") }))
@@ -294,11 +294,11 @@ struct CaptureMenuState {
     var editorCount = 0
 }
 
-private struct SendableImageBatch: @unchecked Sendable {
+struct SendableImageBatch: @unchecked Sendable {
     let images: [CGImage]
 }
 
-private struct SendableImage: @unchecked Sendable {
+struct SendableImage: @unchecked Sendable {
     let image: CGImage
 }
 
@@ -332,6 +332,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var shortcutManager: ShortcutManager!
     private let launchAtLogin = LaunchAtLoginController()
     private var readinessWindow: ReadinessWindowController?
+    private var workflowWindow: WorkflowPreferencesWindow?
     private let menu = NSMenu()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -343,6 +344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.toolTip = "ScreenWren — Capture Region (⌃P)"
 
         menu.delegate = self
+        menu.autoenablesItems = false
         statusItem.menu = menu
         self.statusItem = statusItem
 
@@ -352,26 +354,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .repeatCapture: { [weak captureCoordinator] in captureCoordinator?.repeatLastCapture() },
             .frontWindow: { [weak captureCoordinator] in captureCoordinator?.captureFrontWindow() },
             .freeze: { [weak captureCoordinator] in captureCoordinator?.beginFreezeCapture() },
+            .recents: { [weak captureCoordinator] in captureCoordinator?.showRecentPicker() },
+            .togglePins: { [weak captureCoordinator] in captureCoordinator?.togglePins() },
         ])
         shortcutManager.onChange = { [weak self] in
             self?.updateShortcutStatus()
             self?.rebuildMenu()
-            self?.readinessWindow?.showWindow(nil)
         }
         shortcutManager.registerAll()
 
-        let readiness = ReadinessWindowController(
-            shortcutManager: shortcutManager,
-            launchAtLogin: launchAtLogin
-        )
-        readiness.onTryCapture = { [weak captureCoordinator] in captureCoordinator?.primaryAction() }
-        readiness.onDismiss = {
-            UserDefaults.standard.set(true, forKey: "readiness.v1.completed")
-        }
-        readinessWindow = readiness
         captureCoordinator.onStateChange = { [weak self] in self?.rebuildMenu() }
         captureCoordinator.onStatus = { [weak self] status in self?.showStatus(status) }
-        captureCoordinator.onPermissionRequired = { [weak self] in self?.showReadiness() }
+        captureCoordinator.onPermissionRequired = { [weak self] captureWasDenied in
+            self?.showReadiness(captureWasDenied: captureWasDenied)
+        }
         rebuildMenu()
 
         let arguments = CommandLine.arguments
@@ -393,16 +389,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             DispatchQueue.main.async { [captureCoordinator] in
                 captureCoordinator.openEditor(image: cgImage, copied: false)
             }
-        } else if arguments.contains("--login-item") {
-            // A login launch stays quietly available in the menu bar.
-        } else if !UserDefaults.standard.bool(forKey: "readiness.v1.completed")
-                    || !CGPreflightScreenCaptureAccess() {
-            showReadiness()
-        } else {
-            DispatchQueue.main.async { [captureCoordinator] in
-                captureCoordinator.primaryAction()
-            }
         }
+        // Ordinary launches, including login launches, stay quiet until a command.
     }
 
     private func runQACapture(to outputURL: URL) {
@@ -437,8 +425,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if CGPreflightScreenCaptureAccess() { captureCoordinator.primaryAction() }
-        else { showReadiness() }
         return false
     }
 
@@ -494,6 +480,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         captureCoordinator.showEditors()
     }
 
+    @objc private func openWorkflowPreferences() {
+        if workflowWindow == nil { workflowWindow = WorkflowPreferencesWindow() }
+        workflowWindow?.showWindow(nil)
+        workflowWindow?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate()
+    }
+
+    @objc private func showRecentPicker() { captureCoordinator.showRecentPicker() }
+    @objc private func togglePins() { captureCoordinator.togglePins() }
+    @objc private func unlockPins() { captureCoordinator.unlockPins() }
+    @objc private func structuredTextCapture() { captureCoordinator.beginStructuredTextCapture() }
+
     @objc private func openReadiness() {
         showReadiness()
     }
@@ -536,6 +534,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let textItem = item("Copy Text from Region…", action: #selector(captureText), shortcut: .copyText)
         textItem.isEnabled = !state.isScrolling
         menu.addItem(textItem)
+        let structuredText = item("Capture Text With Preview…", action: #selector(structuredTextCapture))
+        structuredText.isEnabled = !state.isScrolling
+        menu.addItem(structuredText)
         let repeatItem = item(state.repeatTitle, action: #selector(repeatCapture), shortcut: .repeatCapture)
         repeatItem.isEnabled = state.canRepeat && !state.isScrolling
         menu.addItem(repeatItem)
@@ -560,6 +561,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             menu.addItem(item("Start Scrolling Capture…", action: #selector(startScrollingCapture)))
         }
 
+        menu.addItem(item("Browse Recent Captures…", action: #selector(showRecentPicker), shortcut: .recents))
+        menu.addItem(item("Hide / Restore All Pins", action: #selector(togglePins), shortcut: .togglePins))
+        menu.addItem(item("Unlock All Pins", action: #selector(unlockPins)))
         let recentsItem = NSMenuItem(title: "Recents — Session Only", action: nil, keyEquivalent: "")
         let recentsMenu = NSMenu()
         if state.recentDates.isEmpty {
@@ -584,6 +588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let editorsItem = item("Show Open Editors (\(state.editorCount))", action: #selector(showEditors))
         editorsItem.isEnabled = state.editorCount > 0
         menu.addItem(editorsItem)
+        menu.addItem(item("Capture Preferences…", action: #selector(openWorkflowPreferences)))
         menu.addItem(item("ScreenWren Readiness…", action: #selector(openReadiness)))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit ScreenWren", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -618,7 +623,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func showReadiness() {
+    private func showReadiness(captureWasDenied: Bool = false) {
+        if readinessWindow == nil {
+            let readiness = ReadinessWindowController(
+                shortcutManager: shortcutManager,
+                launchAtLogin: launchAtLogin
+            )
+            readiness.onTryCapture = { [weak captureCoordinator] in captureCoordinator?.primaryAction() }
+            readinessWindow = readiness
+        }
+        if captureWasDenied { readinessWindow?.capturePermissionWasDenied() }
         readinessWindow?.show()
     }
 
@@ -627,13 +641,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let applicationItem = NSMenuItem()
         mainMenu.addItem(applicationItem)
         let applicationMenu = NSMenu()
+        let settingsItem = NSMenuItem(title: "Settings…", action: #selector(openReadiness), keyEquivalent: ",")
+        settingsItem.target = self
+        applicationMenu.addItem(settingsItem)
+        let capturePreferences = NSMenuItem(title: "Capture Preferences…", action: #selector(openWorkflowPreferences), keyEquivalent: ",")
+        capturePreferences.keyEquivalentModifierMask = [.command, .option]
+        capturePreferences.target = self
+        applicationMenu.addItem(capturePreferences)
+        let recentPicker = NSMenuItem(title: "Browse Recent Captures…", action: #selector(showRecentPicker), keyEquivalent: "")
+        recentPicker.target = self; applicationMenu.addItem(recentPicker)
+        applicationMenu.addItem(.separator())
         applicationMenu.addItem(NSMenuItem(title: "Quit ScreenWren", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         applicationItem.submenu = applicationMenu
 
         let fileItem = NSMenuItem()
         mainMenu.addItem(fileItem)
         let fileMenu = NSMenu(title: "File")
-        fileMenu.addItem(withTitle: "Save PNG…", action: #selector(EditorViewController.saveDocument(_:)), keyEquivalent: "s")
+        fileMenu.addItem(withTitle: "Export Image…", action: #selector(EditorViewController.saveDocument(_:)), keyEquivalent: "s")
         let copyAndClose = fileMenu.addItem(
             withTitle: "Copy and Close",
             action: #selector(EditorViewController.copyAndClose(_:)),
@@ -648,6 +672,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editMenu.addItem(withTitle: "Undo", action: Selector(("undo:")), keyEquivalent: "z")
         let redo = editMenu.addItem(withTitle: "Redo", action: Selector(("redo:")), keyEquivalent: "Z")
         redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(.separator())
+        editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
         editItem.submenu = editMenu
         NSApp.mainMenu = mainMenu
     }
@@ -722,11 +751,7 @@ final class HotKey: @unchecked Sendable {
 
 @MainActor
 final class CaptureCoordinator: NSObject {
-    struct RecentCapture {
-        let image: CGImage
-        let date: Date
-        var byteCount: Int { image.width * image.height * 4 }
-    }
+    typealias RecentCapture = SessionCapture
 
     struct ScrollingSession {
         let region: DisplayRegion
@@ -736,7 +761,7 @@ final class CaptureCoordinator: NSObject {
 
     var onStateChange: (() -> Void)?
     var onStatus: ((ScreenWrenStatus) -> Void)?
-    var onPermissionRequired: (() -> Void)?
+    var onPermissionRequired: ((Bool) -> Void)?
     private var selectionWindow: SelectionWindowController?
     private var editors: [EditorWindowController] = []
     private var pins: [PinnedWindowController] = []
@@ -747,13 +772,32 @@ final class CaptureCoordinator: NSObject {
     private var timedTask: Task<Void, Never>?
     private var scrollingSession: ScrollingSession?
     private var isStitching = false
+    private var recentPicker: RecentPickerWindow?
+    private var quickCapture: QuickCaptureWindow?
+    private var auxiliaryWindows: [NSWindowController] = []
+    private var combinationTask: Task<Void, Never>?
+    private var pinsAreHidden = false
+    private let preferences: WorkflowPreferences
+    private let pasteboard: NSPasteboard
+    private let recentMemoryLimit: Int
+    var recentCaptures: [SessionCapture] { recents }
 
-    override init() {
+    init(preferences: WorkflowPreferences = .shared, pasteboard: NSPasteboard = .general,
+         recentMemoryLimit: Int = 128 * 1_024 * 1_024) {
+        self.preferences = preferences
+        self.pasteboard = pasteboard
+        self.recentMemoryLimit = recentMemoryLimit
         super.init()
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(screenParametersChanged),
             name: NSApplication.didChangeScreenParametersNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(cancelSelection),
+            name: NSApplication.didResignActiveNotification,
             object: nil
         )
     }
@@ -762,6 +806,7 @@ final class CaptureCoordinator: NSObject {
         CaptureMenuState(
             canRepeat: lastTarget.map { target in
                 if case let .region(region) = target { return region.isValid }
+                if case let .desktop(region) = target { return region.isValid }
                 return true
             } ?? false,
             repeatTitle: lastTarget?.menuTitle ?? "Repeat Last Capture",
@@ -775,9 +820,21 @@ final class CaptureCoordinator: NSObject {
     }
 
     func primaryAction() {
-        if isStitching { announce("Wait for scrolling stitch to finish", beep: true) }
+        if selectionWindow != nil { cancelSelection() }
+        else if isStitching { announce("Wait for scrolling stitch to finish", beep: true) }
         else if scrollingSession != nil { addScrollingSegment() }
         else { beginSelection(intent: .image) }
+    }
+
+    @objc private func cancelSelection() {
+        guard let selectionWindow else { return }
+        selectionWindow.cancel()
+        _ = supersedePendingCapture()
+    }
+
+    func beginStructuredTextCapture() {
+        guard scrollingSession == nil else { return }
+        beginSelection(intent: .structuredText)
     }
 
     func beginTextCapture() {
@@ -810,7 +867,7 @@ final class CaptureCoordinator: NSObject {
         selectionWindow?.cancel()
         let captureGeneration = supersedePendingCapture()
         let clipboardGeneration = ClipboardDeliveryOrder.shared.begin()
-        let clipboardChangeCount = NSPasteboard.general.changeCount
+        let clipboardChangeCount = pasteboard.changeCount
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
@@ -829,7 +886,7 @@ final class CaptureCoordinator: NSObject {
                 )
             } catch {
                 guard isCurrentCapture(captureGeneration, currentGeneration: self.generation) else { return }
-                self.announce(error.localizedDescription, beep: true)
+                self.reportCaptureError(error)
             }
         }
     }
@@ -847,7 +904,9 @@ final class CaptureCoordinator: NSObject {
         let restoreApplication = frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : frontmostApplication
         let captureGeneration = supersedePendingCapture()
         let clipboardGeneration = ClipboardDeliveryOrder.shared.begin()
-        let clipboardChangeCount = NSPasteboard.general.changeCount
+        let clipboardChangeCount = pasteboard.changeCount
+        let destination = preferences.destination
+        quickCapture?.close()
         announce("Freezing screen…", symbol: "snowflake")
 
         Task { @MainActor [weak self] in
@@ -877,36 +936,21 @@ final class CaptureCoordinator: NSObject {
                             selection: localSelection,
                             viewSize: screen.frame.size
                         )
-                        let clipboardEligible = ClipboardDeliveryOrder.shared.isCurrent(clipboardGeneration)
-                            && clipboardStateIsUnchanged(since: clipboardChangeCount)
-                        var copied = false
-                        if clipboardEligible {
-                            do {
-                                try self.deliverImage(image)
-                                copied = true
-                            } catch {
-                                // The capture remains useful in Recents and the editor.
-                            }
-                        }
                         restoreApplication?.activate(options: [])
-                        self.addRecent(image)
-                        self.openEditor(image: image, copied: copied)
+                        self.finishImageCapture(image, scale: screen.backingScaleFactor, destination: destination,
+                            clipboardGeneration: clipboardGeneration, clipboardChangeCount: clipboardChangeCount)
                         self.lastTarget = .region(region)
-                        let message = copied
-                            ? "Frozen capture copied"
-                            : (clipboardEligible ? "Frozen capture ready — clipboard unavailable" : "Frozen capture ready — newer clipboard content preserved")
-                        self.announce(message, beep: clipboardEligible && !copied)
                         self.onStateChange?()
                     } catch {
                         restoreApplication?.activate(options: [])
-                        self.announce(error.localizedDescription, beep: true)
+                        self.reportCaptureError(error)
                     }
                 }
                 self.selectionWindow = controller
                 controller.show()
             } catch {
                 guard isCurrentCapture(captureGeneration, currentGeneration: self.generation) else { return }
-                self.announce(error.localizedDescription, beep: true)
+                self.reportCaptureError(error)
             }
         }
     }
@@ -929,25 +973,25 @@ final class CaptureCoordinator: NSObject {
             ?? (frontmostApplication?.bundleIdentifier == Bundle.main.bundleIdentifier ? nil : frontmostApplication)
         let captureGeneration = supersedePendingCapture()
         let clipboardGeneration = ClipboardDeliveryOrder.shared.begin()
-        let clipboardChangeCount = NSPasteboard.general.changeCount
+        let clipboardChangeCount = pasteboard.changeCount
         let prompt: String
         switch intent {
-        case .image: prompt = "Click a window or drag a region"
-        case .text: prompt = "Drag around text"
+        case .image: prompt = "Drag to capture a region"
+        case .text, .structuredText: prompt = "Drag around text"
         case .delayedImage: prompt = "Select where the menu or tooltip will appear"
         case .scrolling: prompt = "Drag the scrolling viewport"
         }
         let allowsWindowSnap: Bool
         switch intent {
-        case .image, .text: allowsWindowSnap = true
+        case .image, .text, .structuredText: allowsWindowSnap = true
         case .delayedImage, .scrolling: allowsWindowSnap = false
         }
 
-        // ponytail: capture the display under the pointer; add simultaneous multi-display overlays when cross-display selection matters.
         let controller = SelectionWindowController(
             screen: screen,
             prompt: prompt,
-            allowsWindows: allowsWindowSnap
+            allowsWindows: allowsWindowSnap,
+            spansDisplays: intent != .scrolling
         ) { [weak self] target in
             guard let self else { return }
             self.selectionWindow = nil
@@ -971,13 +1015,13 @@ final class CaptureCoordinator: NSObject {
                     clipboardGeneration: clipboardGeneration,
                     clipboardChangeCount: clipboardChangeCount
                 )
-            case .text:
+            case .text, .structuredText:
                 restoreApplication?.activate(options: [])
                 Task { @MainActor in
                     await Task.yield()
                     await self.capture(
                         target: target,
-                        intent: .text,
+                        intent: intent,
                         generation: captureGeneration,
                         clipboardGeneration: clipboardGeneration,
                         clipboardChangeCount: clipboardChangeCount,
@@ -1005,6 +1049,11 @@ final class CaptureCoordinator: NSObject {
                 }
             }
         }
+        controller.onLoupeNeeded = { [weak self, weak controller] display in
+            guard let self, let controller else { return }
+            self.loadLoupe(for: display, controller: controller, generation: captureGeneration)
+        }
+        quickCapture?.close()
         selectionWindow = controller
         controller.show()
 
@@ -1019,16 +1068,29 @@ final class CaptureCoordinator: NSObject {
                 controller.updateWindowCandidates(candidates)
             } catch {
                 // Region selection stays live when optional window enumeration fails.
+                guard isScreenCapturePermissionError(error), let self, let controller,
+                      isCurrentCapture(captureGeneration, currentGeneration: self.generation),
+                      self.selectionWindow === controller else { return }
+                self.reportCaptureError(error)
             }
         }
 
+    }
+
+    private func loadLoupe(for display: NSScreen, controller: SelectionWindowController, generation captureGeneration: UInt64) {
         Task { @MainActor [weak self, weak controller] in
-            guard let image = try? await acquireFullDisplayScreenshot(for: screen),
-                  let self,
-                  let controller,
-                  isCurrentCapture(captureGeneration, currentGeneration: self.generation),
-                  self.selectionWindow === controller else { return }
-            controller.updateLoupeImage(image)
+            do {
+                let image = try await acquireFullDisplayScreenshot(for: display)
+                guard let self, let controller,
+                      isCurrentCapture(captureGeneration, currentGeneration: self.generation),
+                      self.selectionWindow === controller else { return }
+                controller.updateLoupeImage(image, for: display)
+            } catch {
+                guard isScreenCapturePermissionError(error), let self, let controller,
+                      isCurrentCapture(captureGeneration, currentGeneration: self.generation),
+                      self.selectionWindow === controller else { return }
+                self.reportCaptureError(error)
+            }
         }
     }
 
@@ -1043,12 +1105,15 @@ final class CaptureCoordinator: NSObject {
         }
         let captureGeneration = supersedePendingCapture()
         let clipboardGeneration = ClipboardDeliveryOrder.shared.begin()
-        let clipboardChangeCount = NSPasteboard.general.changeCount
+        let clipboardChangeCount = pasteboard.changeCount
         Task { @MainActor [weak self] in
             guard let self else { return }
             let target: SelectionTarget
             do {
                 switch repeatTarget {
+                case let .desktop(region):
+                    guard region.isValid else { throw CaptureSupportError.displayChanged }
+                    target = .desktop(region)
                 case let .region(region):
                     guard region.isValid else {
                         self.lastTarget = nil
@@ -1075,7 +1140,7 @@ final class CaptureCoordinator: NSObject {
                 )
             } catch {
                 guard isCurrentCapture(captureGeneration, currentGeneration: self.generation) else { return }
-                self.announce(error.localizedDescription, beep: true)
+                self.reportCaptureError(error)
             }
         }
     }
@@ -1128,6 +1193,7 @@ final class CaptureCoordinator: NSObject {
         clipboardChangeCount: Int,
         rememberTarget: Bool
     ) async {
+        let destination = preferences.destination
         do {
             let image = try await acquireScreenshot(for: target)
             guard isCurrentCapture(captureGeneration, currentGeneration: generation) else { return }
@@ -1140,7 +1206,7 @@ final class CaptureCoordinator: NSObject {
                     announce("Copy superseded by a newer action")
                     return
                 }
-                guard clipboardStateIsUnchanged(since: clipboardChangeCount) else {
+                guard clipboardStateIsUnchanged(since: clipboardChangeCount, on: pasteboard) else {
                     announce("Newer clipboard content preserved")
                     return
                 }
@@ -1148,32 +1214,18 @@ final class CaptureCoordinator: NSObject {
                     announce("No text found", beep: true)
                     return
                 }
-                NSPasteboard.general.clearContents()
-                guard NSPasteboard.general.setString(text, forType: .string) else {
+                pasteboard.clearContents()
+                guard pasteboard.setString(text, forType: .string) else {
                     throw CaptureError.clipboardWriteFailed
                 }
                 announce("Text copied — \(text.count) characters", symbol: "text.viewfinder")
 
+            case .structuredText:
+                showTextPreview(image)
             case .image, .delayedImage:
-                let clipboardEligible = ClipboardDeliveryOrder.shared.isCurrent(clipboardGeneration)
-                    && clipboardStateIsUnchanged(since: clipboardChangeCount)
-                var copied = false
-                if clipboardEligible {
-                    do {
-                        try deliverImage(image)
-                        copied = true
-                    } catch {
-                        // Preserve the completed capture even when the pasteboard rejects it.
-                    }
-                }
-                guard isCurrentCapture(captureGeneration, currentGeneration: generation) else { return }
-                addRecent(image)
-                openEditor(image: image, copied: copied)
+                finishImageCapture(image, scale: target.pixelScale, destination: destination,
+                    clipboardGeneration: clipboardGeneration, clipboardChangeCount: clipboardChangeCount)
                 if rememberTarget { lastTarget = RepeatTarget(target) }
-                let message = copied
-                    ? "Captured and copied"
-                    : (clipboardEligible ? "Captured — clipboard unavailable" : "Captured — newer clipboard content preserved")
-                announce(message, beep: clipboardEligible && !copied)
                 onStateChange?()
 
             case .scrolling:
@@ -1182,14 +1234,14 @@ final class CaptureCoordinator: NSObject {
         } catch is CancellationError {
         } catch {
             guard isCurrentCapture(captureGeneration, currentGeneration: generation) else { return }
-            announce(error.localizedDescription, beep: true)
+            reportCaptureError(error)
         }
     }
 
     private func deliverImage(_ image: CGImage) throws {
         let nsImage = NSImage(cgImage: image, size: NSSize(width: image.width, height: image.height))
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.writeObjects([nsImage]) else {
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([nsImage]) else {
             throw CaptureError.clipboardWriteFailed
         }
     }
@@ -1202,6 +1254,7 @@ final class CaptureCoordinator: NSObject {
         do {
             let image = try await acquireScreenshot(for: target)
             guard isCurrentCapture(captureGeneration, currentGeneration: generation) else { return }
+            _ = try checkedScrollingMemoryUsage(currentBytes: 0, adding: uncompressedByteEstimate(for: image))
             let outputHeight = try checkedScrollingOutputHeight(
                 width: image.width,
                 currentHeight: 0,
@@ -1213,7 +1266,7 @@ final class CaptureCoordinator: NSObject {
             onStateChange?()
         } catch {
             guard isCurrentCapture(captureGeneration, currentGeneration: generation) else { return }
-            announce(error.localizedDescription, beep: true)
+            reportCaptureError(error)
         }
     }
 
@@ -1255,11 +1308,10 @@ final class CaptureCoordinator: NSObject {
                     frameHeight: image.height,
                     overlap: overlap
                 )
-                let memoryLimit = 256 * 1_024 * 1_024
-                let usedBytes = current.images.reduce(0) { $0 + min(memoryLimit + 1, uncompressedByteEstimate(for: $1)) }
-                guard usedBytes + min(memoryLimit + 1, uncompressedByteEstimate(for: image)) <= memoryLimit else {
-                    throw ImageOperationsError.outputTooLarge
+                let usedBytes = try current.images.reduce(0) {
+                    try checkedScrollingMemoryUsage(currentBytes: $0, adding: uncompressedByteEstimate(for: $1))
                 }
+                _ = try checkedScrollingMemoryUsage(currentBytes: usedBytes, adding: uncompressedByteEstimate(for: image))
                 current.images.append(image)
                 current.estimatedOutputHeight = projectedHeight
                 self.scrollingSession = current
@@ -1267,7 +1319,7 @@ final class CaptureCoordinator: NSObject {
                 self.onStateChange?()
             } catch {
                 guard isCurrentCapture(captureGeneration, currentGeneration: self.generation) else { return }
-                self.announce(error.localizedDescription, beep: true)
+                self.reportCaptureError(error)
             }
         }
     }
@@ -1304,7 +1356,7 @@ final class CaptureCoordinator: NSObject {
                 self.onStateChange?()
             } catch {
                 guard isCurrentCapture(captureGeneration, currentGeneration: self.generation) else { return }
-                self.announce(error.localizedDescription, beep: true)
+                self.reportCaptureError(error)
             }
         }
     }
@@ -1327,7 +1379,7 @@ final class CaptureCoordinator: NSObject {
 
     func openRecent(at index: Int) {
         guard recents.indices.contains(index) else { return }
-        openEditor(image: recents[index].image, copied: false)
+        openEditor(image: recents[index].image, copied: false, sourceScale: recents[index].scale)
         announce("Recent capture reopened")
     }
 
@@ -1343,7 +1395,10 @@ final class CaptureCoordinator: NSObject {
     }
 
     func clearRecents() {
+        combinationTask?.cancel()
         recents.removeAll()
+        recentPicker?.update(recents)
+        quickCapture?.close()
         onStateChange?()
         announce("Recents cleared")
     }
@@ -1356,18 +1411,21 @@ final class CaptureCoordinator: NSObject {
         announce("Showing \(editors.count) editor\(editors.count == 1 ? "" : "s")")
     }
 
-    private func addRecent(_ image: CGImage) {
-        let recent = RecentCapture(image: image, date: Date())
-        let memoryLimit = 128 * 1_024 * 1_024
-        guard recent.byteCount <= memoryLimit else { return }
+    @discardableResult
+    private func addRecent(_ image: CGImage, scale: CGFloat = 1) -> Bool {
+        let recent = RecentCapture(image: image, date: Date(), scale: scale)
+        guard recent.byteCount <= recentMemoryLimit else { return false }
         recents.insert(recent, at: 0)
-        while recents.count > 5 || recents.reduce(0, { $0 + $1.byteCount }) > memoryLimit {
+        while recents.count > 5 || recents.reduce(0, { $0 + $1.byteCount }) > recentMemoryLimit {
             recents.removeLast()
         }
+        recentPicker?.update(recents)
+        return true
     }
 
     private func supersedePendingCapture(cancelTimed: Bool = true) -> UInt64 {
         generation &+= 1
+        combinationTask?.cancel()
         if cancelTimed {
             timedTask?.cancel()
             timedTask = nil
@@ -1378,11 +1436,27 @@ final class CaptureCoordinator: NSObject {
 
     private func requireScreenCapturePermission() -> Bool {
         guard CGPreflightScreenCaptureAccess() else {
-            onPermissionRequired?()
-            announce("Screen capture permission is required", symbol: "exclamationmark.triangle")
+            showPermissionRecovery(captureWasDenied: false)
             return false
         }
         return true
+    }
+
+    private func reportCaptureError(_ error: Error) {
+        guard isScreenCapturePermissionError(error) else {
+            announce(error.localizedDescription, beep: true)
+            return
+        }
+        showPermissionRecovery(captureWasDenied: true)
+    }
+
+    private func showPermissionRecovery(captureWasDenied: Bool) {
+        cancelSelection()
+        scrollingSession = nil
+        _ = supersedePendingCapture()
+        invalidateRegionCaptureFilters()
+        onPermissionRequired?(captureWasDenied)
+        announce("Screen access is unavailable — check permission, then quit and reopen", symbol: "exclamationmark.triangle")
     }
 
     @objc private func screenParametersChanged() {
@@ -1392,6 +1466,7 @@ final class CaptureCoordinator: NSObject {
         selectionWindow = nil
         activeSelection?.cancel()
         if case .region = lastTarget { lastTarget = nil }
+        if case .desktop = lastTarget { lastTarget = nil }
         if timedTask != nil { cancelTimedCapture() }
         if scrollingSession != nil {
             if isStitching {
@@ -1404,9 +1479,9 @@ final class CaptureCoordinator: NSObject {
         onStateChange?()
     }
 
-    func openEditor(image: CGImage, copied: Bool) {
-        let editor = EditorWindowController(image: image, copied: copied) { [weak self] image in
-            self?.pin(image: image)
+    func openEditor(image: CGImage, copied: Bool, sourceScale: CGFloat = 1) {
+        let editor = EditorWindowController(image: image, copied: copied, sourceScale: sourceScale) { [weak self] image in
+            self?.pin(image: image, sourceScale: sourceScale)
         }
         editor.onClose = { [weak self, weak editor] in
             guard let editor else { return }
@@ -1419,8 +1494,8 @@ final class CaptureCoordinator: NSObject {
         NSApp.activate()
     }
 
-    private func pin(image: CGImage) {
-        let pin = PinnedWindowController(image: image)
+    private func pin(image: CGImage, sourceScale: CGFloat = 1) {
+        let pin = PinnedWindowController(image: image, sourceScale: sourceScale)
         pin.onClose = { [weak self, weak pin] in
             guard let pin else { return }
             self?.pins.removeAll { $0 === pin }
@@ -1429,9 +1504,118 @@ final class CaptureCoordinator: NSObject {
         if pins.count > 5 {
             pins.removeFirst().close()
         }
-        pin.showWindow(nil)
+        if !pinsAreHidden { pin.showWindow(nil) }
         announce("Pinned above windows", symbol: "pin")
     }
+
+    func finishImageCapture(_ image: CGImage, scale: CGFloat, destination: CaptureDestination,
+                                    clipboardGeneration: UInt64, clipboardChangeCount: Int) {
+        if destination == .review {
+            showRedactionReview(image, scale: scale)
+            announce("Review the capture before copying", symbol: "eye")
+            return
+        }
+        let clipboardEligible = ClipboardDeliveryOrder.shared.isCurrent(clipboardGeneration) && clipboardStateIsUnchanged(since: clipboardChangeCount, on: pasteboard)
+        var copied = false
+        if destination.copiesImmediately && clipboardEligible {
+            do { try deliverImage(image); copied = true } catch {}
+        }
+        let retained = addRecent(image, scale: scale)
+        switch destination {
+        case .clipboard:
+            if !copied && (clipboardEligible || !retained) {
+                openEditor(image: image, copied: false, sourceScale: scale)
+            }
+        case .editor: openEditor(image: image, copied: copied, sourceScale: scale)
+        case .pin: pin(image: image, sourceScale: scale)
+        case .save: showExport(image, scale: scale)
+        case .review: break
+        }
+        if preferences.showsThumbnail && destination == .clipboard {
+            quickCapture?.close()
+            quickCapture = QuickCaptureWindow(image: image) { [weak self] action in self?.actOnImage(action, image: image, scale: scale) }
+            quickCapture?.onClose = { [weak self] in self?.quickCapture = nil }
+            quickCapture?.present()
+        }
+        announce(copied ? "Captured and copied" : (destination.copiesImmediately ? "Capture ready — clipboard unchanged" : "Capture ready"))
+        onStateChange?()
+    }
+
+    private func actOnImage(_ action: RecentAction, image: CGImage, scale: CGFloat) {
+        switch action {
+        case .copy:
+            _ = ClipboardDeliveryOrder.shared.begin()
+            do { try deliverImage(image); announce("Copied") } catch { reportCaptureError(error) }
+        case .edit: openEditor(image: image, copied: false, sourceScale: scale)
+        case .pin: pin(image: image, sourceScale: scale)
+        case .save: showExport(image, scale: scale)
+        }
+    }
+
+    private func showExport(_ image: CGImage, scale: CGFloat) { presentAuxiliary(ImageExportWindow(image: image, sourceScale: scale)) }
+    private func showTextPreview(_ image: CGImage) { presentAuxiliary(TextPreviewWindow(image: image)) }
+    private func showRedactionReview(_ image: CGImage, scale: CGFloat) {
+        let review = RedactionReviewWindow(image: image, actionTitle: "Approve & Copy") { [weak self] image, ticket in
+            guard let self, let ticket else { return }
+            self.addRecent(image, scale: scale)
+            if ticket.isCurrent(on: self.pasteboard) {
+                do { try self.deliverImage(image); self.announce("Reviewed image copied") } catch { self.reportCaptureError(error) }
+            } else { self.openEditor(image: image, copied: false, sourceScale: scale); self.announce("Reviewed image ready — newer clipboard content preserved") }
+            self.onStateChange?()
+        }
+        presentAuxiliary(review)
+    }
+
+    private func presentAuxiliary(_ controller: NSWindowController) {
+        auxiliaryWindows.append(controller)
+        let close: () -> Void = { [weak self, weak controller] in
+            guard let controller else { return }; self?.auxiliaryWindows.removeAll { $0 === controller }
+        }
+        if let export = controller as? ImageExportWindow { export.onClose = close }
+        if let text = controller as? TextPreviewWindow { text.onClose = close }
+        if let review = controller as? RedactionReviewWindow { review.onClose = close }
+        controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil); NSApp.activate()
+    }
+
+    func showRecentPicker() {
+        cancelSelection()
+        if recentPicker == nil {
+            recentPicker = RecentPickerWindow(onAction: { [weak self] action, id in
+                guard let self, let record = self.recents.first(where: { $0.id == id }) else { return }
+                self.actOnImage(action, image: record.image, scale: record.scale)
+            }, onCombine: { [weak self] ids, layout in self?.combineRecents(ids, layout: layout) }, onDelete: { [weak self] ids in
+                guard let self else { return }
+                self.combinationTask?.cancel()
+                self.recents.removeAll { ids.contains($0.id) }
+                self.recentPicker?.update(self.recents)
+                self.onStateChange?()
+            })
+            recentPicker?.onClose = { [weak self] in self?.combinationTask?.cancel() }
+        }
+        recentPicker?.update(recents); recentPicker?.showWindow(nil); recentPicker?.window?.makeKeyAndOrderFront(nil); NSApp.activate()
+    }
+
+    private func combineRecents(_ ids: [UUID], layout: CompositionLayout) {
+        combinationTask?.cancel()
+        let selected = recents.filter { ids.contains($0.id) }.sorted { $0.date < $1.date }
+        guard selected.count >= 2 else { return }
+        let batch = SendableImageBatch(images: selected.map(\.image))
+        combinationTask = Task { @MainActor [weak self] in
+            do {
+                let result = try await Task.detached(priority: .userInitiated) { SendableImage(image: try combinedImages(batch.images, layout: layout)) }.value
+                try Task.checkCancellation(); guard let self else { return }
+                self.openEditor(image: result.image, copied: false)
+            } catch is CancellationError {} catch { self?.reportCaptureError(error) }
+        }
+    }
+
+    func togglePins() {
+        guard !pins.isEmpty else { announce("No pinned captures"); return }
+        pinsAreHidden.toggle()
+        for pin in pins { if pinsAreHidden { pin.window?.orderOut(nil) } else { pin.window?.orderFrontRegardless() } }
+        announce(pinsAreHidden ? "Pins hidden" : "Pins restored", symbol: "pin")
+    }
+    func unlockPins() { pins.forEach { $0.unlock() }; announce("Pins accept clicks again", symbol: "pin") }
 
     private func announce(_ message: String, symbol: String = "viewfinder", badge: String? = nil, beep: Bool = false) {
         if beep { NSSound.beep() }
@@ -1459,120 +1643,136 @@ enum CaptureError: LocalizedError {
 }
 
 @MainActor
+private final class SelectionWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+}
+
+@MainActor
 final class SelectionWindowController: NSWindowController {
     private let screen: NSScreen
     private let selectionView: SelectionView
     private let onSelection: (SelectionTarget?) -> Void
+    private var overlays: [(screen: NSScreen, window: NSWindow, view: SelectionView)] = []
+    private var candidatesByID: [CGWindowID: WindowCandidate] = [:]
+    private var finished = false
+    private let desktopFrame: CGRect
+    private let outputScale: CGFloat
+    private var loupeDisplay: NSScreen?
+    var onLoupeNeeded: ((NSScreen) -> Void)?
 
-    init(
-        screen: NSScreen,
-        prompt: String,
-        allowsWindows: Bool,
-        backgroundImage: CGImage? = nil,
-        onSelection: @escaping (SelectionTarget?) -> Void
-    ) {
-        self.screen = screen
-        self.onSelection = onSelection
-        selectionView = SelectionView(
-            frame: CGRect(origin: .zero, size: screen.frame.size),
-            pixelScale: screen.backingScaleFactor,
-            prompt: prompt,
-            allowsWindows: allowsWindows,
-            backgroundImage: backgroundImage
-        )
-
-        let window = NSWindow(
-            contentRect: screen.frame,
-            styleMask: .borderless,
-            backing: .buffered,
-            defer: false,
-            screen: screen
-        )
-        window.level = .screenSaver
-        window.backgroundColor = .clear
-        window.isOpaque = false
-        window.hasShadow = false
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
-        window.acceptsMouseMovedEvents = true
-
-        super.init(window: window)
-
-        selectionView.setAccessibilityElement(true)
-        selectionView.setAccessibilityRole(.group)
-        selectionView.setAccessibilityLabel("Screen capture target")
-        selectionView.setAccessibilityHelp("Click a highlighted window or drag a region. Press Escape to cancel.")
-        selectionView.onFinish = { [weak self, weak window] choice in
-            window?.orderOut(nil)
-            guard let self else { return }
-            switch choice {
-            case let .region(localRect):
-                let globalRect = localRect.offsetBy(dx: screen.frame.minX, dy: screen.frame.minY)
-                self.onSelection(DisplayRegion(rect: globalRect, screen: screen).map(SelectionTarget.region))
-            case let .window(candidate):
-                self.onSelection(.window(candidate))
-            case nil:
-                self.onSelection(nil)
+    init(screen: NSScreen, prompt: String, allowsWindows: Bool, backgroundImage: CGImage? = nil,
+         spansDisplays: Bool = false, options: SelectionOptions? = nil, onSelection: @escaping (SelectionTarget?) -> Void) {
+        self.screen = screen; self.onSelection = onSelection
+        let screens = spansDisplays && backgroundImage == nil ? NSScreen.screens : [screen]
+        let desktop = screens.reduce(CGRect.null) { $0.union($1.frame) }
+        desktopFrame = desktop
+        outputScale = screens.map(\.backingScaleFactor).max() ?? screen.backingScaleFactor
+        let options = options ?? WorkflowPreferences.shared.selectionOptions
+        selectionView = SelectionView(frame: CGRect(origin: .zero, size: screen.frame.size), pixelScale: outputScale, prompt: prompt, allowsWindows: allowsWindows, backgroundImage: backgroundImage, options: options)
+        let primary = Self.makeWindow(for: screen)
+        super.init(window: primary)
+        for display in screens {
+            let isPrimary = display === screen
+            let view = isPrimary ? selectionView : SelectionView(frame: CGRect(origin: .zero, size: display.frame.size), pixelScale: outputScale, prompt: prompt, allowsWindows: allowsWindows, options: options)
+            let window = isPrimary ? primary : Self.makeWindow(for: display)
+            view.bounds.origin = CGPoint(x: display.frame.minX - desktop.minX, y: display.frame.minY - desktop.minY)
+            view.selectionBounds = CGRect(origin: .zero, size: desktop.size)
+            view.setAccessibilityElement(true); view.setAccessibilityRole(.group); view.setAccessibilityLabel("Screen capture target")
+            view.setAccessibilityHelp("Drag a region. Hold Shift on release to adjust. Arrow keys move; Option–arrows resize; Return captures; Escape cancels.")
+            view.onChange = { [weak self, weak view] in
+                guard let self, let view else { return }
+                for overlay in self.overlays where overlay.view !== view { overlay.view.synchronize(from: view) }
+                if let overlay = self.overlays.first(where: { $0.view.bounds.contains(view.pointerLocation) }) { self.requestLoupe(for: overlay.screen) }
             }
+            view.onFinish = { [weak self] choice in self?.finish(choice) }
+            window.contentView = view; window.makeFirstResponder(view)
+            overlays.append((display, window, view))
         }
-        window.contentView = selectionView
-        window.makeFirstResponder(selectionView)
     }
-
+    private static func makeWindow(for screen: NSScreen) -> NSWindow {
+        let window = SelectionWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false, screen: screen)
+        window.level = .screenSaver; window.backgroundColor = .clear; window.isOpaque = false; window.hasShadow = false
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]; window.acceptsMouseMovedEvents = true
+        return window
+    }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
+    private func finish(_ choice: SelectionChoice?) {
+        guard !finished else { return }; finished = true
+        overlays.forEach { $0.window.orderOut(nil) }
+        switch choice {
+        case let .region(local):
+            let global = local.offsetBy(dx: desktopFrame.minX, dy: desktopFrame.minY)
+            if overlays.count == 1 { onSelection(DisplayRegion(rect: global, screen: screen).map(SelectionTarget.region)) }
+            else { onSelection(DesktopRegion(rect: global, screens: overlays.map(\.screen), scale: outputScale).map(SelectionTarget.desktop)) }
+        case let .window(id): onSelection(candidatesByID[id].map(SelectionTarget.window))
+        case nil: onSelection(nil)
+        }
+    }
     func updateWindowCandidates(_ candidates: [WindowCandidate]) {
-        selectionView.updateWindowCandidates(candidates, screenOrigin: screen.frame.origin)
+        candidatesByID = Dictionary(uniqueKeysWithValues: candidates.map { ($0.windowID, $0) })
+        let hits = candidates.map {
+            SelectionView.WindowHit(
+                windowID: $0.windowID,
+                frame: $0.appKitFrame.offsetBy(dx: -desktopFrame.minX, dy: -desktopFrame.minY),
+                applicationName: $0.window.owningApplication?.applicationName ?? "Window"
+            )
+        }
+        for overlay in overlays { overlay.view.updateWindowHits(hits) }
     }
-
-    func updateLoupeImage(_ image: CGImage) {
-        selectionView.updateLoupeImage(image)
+    private func requestLoupe(for screen: NSScreen) {
+        guard onLoupeNeeded != nil, loupeDisplay !== screen else { return }
+        loupeDisplay = screen
+        overlays.forEach { $0.view.clearLoupeImage() }
+        onLoupeNeeded?(screen)
     }
-
+    func updateLoupeImage(_ image: CGImage, for screen: NSScreen? = nil) {
+        let target = screen ?? self.screen
+        guard loupeDisplay === target, let overlay = overlays.first(where: { $0.screen === target }) else { return }
+        overlay.view.updateLoupeImage(image)
+    }
     func show() {
         NSApp.activate()
-        window?.orderFrontRegardless()
-        window?.makeKeyAndOrderFront(nil)
-        NSAccessibility.post(
-            element: selectionView,
-            notification: .announcementRequested,
-            userInfo: [
-                .announcement: selectionView.prompt,
-                .priority: NSAccessibilityPriorityLevel.medium.rawValue,
-            ]
-        )
+        for overlay in overlays { overlay.window.orderFrontRegardless(); overlay.window.invalidateCursorRects(for: overlay.view) }
+        window?.makeKeyAndOrderFront(nil); NSCursor.crosshair.set()
+        requestLoupe(for: screen)
+        NSAccessibility.post(element: selectionView, notification: .announcementRequested,
+                             userInfo: [.announcement: selectionView.prompt, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
     }
-
-    func cancel() {
-        window?.orderOut(nil)
-        onSelection(nil)
-    }
+    func cancel() { finish(nil) }
 }
 
 enum SelectionChoice {
     case region(CGRect)
-    case window(WindowCandidate)
+    case window(CGWindowID)
 }
 
 final class SelectionView: NSView {
     struct WindowHit {
-        let candidate: WindowCandidate
+        let windowID: CGWindowID
         let frame: CGRect
+        let applicationName: String
     }
 
     var onFinish: ((SelectionChoice?) -> Void)?
+    var onChange: (() -> Void)?
+    var selectionBounds: CGRect = .zero
+    private let options: SelectionOptions
+    private var awaitingConfirmation = false
     let prompt: String
     private let pixelScale: CGFloat
     private let allowsWindows: Bool
     private var startPoint: CGPoint?
     private var selection = CGRect.zero
     private var didDrag = false
-    private var windowMode: Bool
+    private(set) var windowMode = false
     private var windowHits: [WindowHit] = []
     private var highlightedWindowIndex: Int?
     private var tracking: NSTrackingArea?
     private var backgroundImage: NSImage?
     private var loupeImage: CGImage?
     private var activePoint = CGPoint.zero
+    var pointerLocation: CGPoint { activePoint }
     private var isMovingSelection = false
     private var moveAnchor = CGPoint.zero
     private var selectionAtMoveStart = CGRect.zero
@@ -1582,22 +1782,37 @@ final class SelectionView: NSView {
         pixelScale: CGFloat,
         prompt: String,
         allowsWindows: Bool,
-        backgroundImage: CGImage? = nil
+        backgroundImage: CGImage? = nil,
+        options: SelectionOptions = SelectionOptions()
     ) {
+        self.options = options
         self.pixelScale = pixelScale
         self.prompt = prompt
         self.allowsWindows = allowsWindows
-        windowMode = allowsWindows
         if let backgroundImage {
             self.backgroundImage = NSImage(cgImage: backgroundImage, size: frame.size)
             loupeImage = backgroundImage
         }
         super.init(frame: frame)
+        selectionBounds = bounds
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
     override var acceptsFirstResponder: Bool { true }
+
+    func synchronize(from other: SelectionView) {
+        selection = other.selection; startPoint = other.startPoint; didDrag = other.didDrag
+        activePoint = other.activePoint; windowMode = other.windowMode; awaitingConfirmation = other.awaitingConfirmation
+        if let index = other.highlightedWindowIndex, other.windowHits.indices.contains(index) {
+            let id = other.windowHits[index].windowID
+            highlightedWindowIndex = windowHits.firstIndex { $0.windowID == id }
+        } else { highlightedWindowIndex = nil }
+        needsDisplay = true
+    }
+    private var fixedSizeInPoints: CGSize? { options.fixedSize.map { CGSize(width: $0.width / pixelScale, height: $0.height / pixelScale) } }
+    private var minimumSelectionSize: CGFloat { 4 / pixelScale }
+    private func changed() { needsDisplay = true; onChange?() }
 
     override func updateTrackingAreas() {
         if let tracking { removeTrackingArea(tracking) }
@@ -1612,14 +1827,16 @@ final class SelectionView: NSView {
         super.updateTrackingAreas()
     }
 
-    func updateWindowCandidates(_ candidates: [WindowCandidate], screenOrigin: CGPoint) {
-        windowHits = candidates.compactMap { candidate in
-            let localFrame = candidate.appKitFrame.offsetBy(dx: -screenOrigin.x, dy: -screenOrigin.y).intersection(bounds)
+    func updateWindowHits(_ hits: [WindowHit]) {
+        windowHits = hits.compactMap { hit in
+            let localFrame = hit.frame.intersection(bounds)
             guard localFrame.width >= 4, localFrame.height >= 4 else { return nil }
-            return WindowHit(candidate: candidate, frame: localFrame)
+            return WindowHit(windowID: hit.windowID, frame: localFrame, applicationName: hit.applicationName)
         }
-        updateHighlightedWindow(at: window?.mouseLocationOutsideOfEventStream ?? .zero)
+        updateHighlightedWindow(at: convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil))
     }
+
+    func clearLoupeImage() { loupeImage = nil; needsDisplay = true }
 
     func updateLoupeImage(_ image: CGImage) {
         loupeImage = image
@@ -1633,16 +1850,23 @@ final class SelectionView: NSView {
     override func mouseMoved(with event: NSEvent) {
         guard startPoint == nil else { return }
         activePoint = convert(event.locationInWindow, from: nil)
+        if !windowMode, let size = fixedSizeInPoints, !awaitingConfirmation {
+            selection = constrainedSelection(from: activePoint, to: activePoint, bounds: selectionBounds, fixedSize: size, ratio: nil, pixelScale: pixelScale)
+            didDrag = true
+        }
         updateHighlightedWindow(at: activePoint)
+        changed()
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
         activePoint = point
+        awaitingConfirmation = false
         startPoint = point
-        selection = CGRect(origin: point, size: .zero)
-        didDrag = false
-        needsDisplay = true
+        selection = constrainedSelection(from: point, to: point, bounds: selectionBounds, fixedSize: windowMode ? nil : fixedSizeInPoints, ratio: options.aspectRatio, pixelScale: pixelScale)
+        didDrag = !windowMode && fixedSizeInPoints != nil
+        updateHighlightedWindow(at: point)
+        changed()
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1651,26 +1875,29 @@ final class SelectionView: NSView {
         activePoint = point
         if isMovingSelection {
             let delta = CGPoint(x: point.x - moveAnchor.x, y: point.y - moveAnchor.y)
-            selection.origin = CGPoint(
-                x: min(max(0, selectionAtMoveStart.minX + delta.x), bounds.maxX - selectionAtMoveStart.width),
-                y: min(max(0, selectionAtMoveStart.minY + delta.y), bounds.maxY - selectionAtMoveStart.height)
+            selection = constrainedSelection(
+                from: .zero,
+                to: CGPoint(x: selectionAtMoveStart.midX + delta.x, y: selectionAtMoveStart.midY + delta.y),
+                bounds: selectionBounds, fixedSize: selectionAtMoveStart.size, ratio: nil, pixelScale: pixelScale
             )
-            selection.size = selectionAtMoveStart.size
         } else {
-            selection = normalizedRect(from: startPoint, to: point).intersection(bounds)
+            selection = constrainedSelection(from: startPoint, to: point, bounds: selectionBounds, fixedSize: fixedSizeInPoints, ratio: options.aspectRatio, pixelScale: pixelScale)
         }
-        didDrag = selection.width >= 4 || selection.height >= 4
-        needsDisplay = true
+        didDrag = selection.width >= minimumSelectionSize || selection.height >= minimumSelectionSize
+        changed()
     }
 
     override func mouseUp(with event: NSEvent) {
         isMovingSelection = false
-        if didDrag, selection.width >= 4, selection.height >= 4 {
+        if didDrag, selection.width >= minimumSelectionSize, selection.height >= minimumSelectionSize {
+            if options.adjustBeforeCapture || event.modifierFlags.contains(.shift) {
+                awaitingConfirmation = true; startPoint = nil; changed(); return
+            }
             onFinish?(.region(selection))
             return
         }
         if !didDrag, windowMode, let highlightedWindowIndex, windowHits.indices.contains(highlightedWindowIndex) {
-            onFinish?(.window(windowHits[highlightedWindowIndex].candidate))
+            onFinish?(.window(windowHits[highlightedWindowIndex].windowID))
             return
         }
         startPoint = nil
@@ -1682,6 +1909,16 @@ final class SelectionView: NSView {
 
     override func keyDown(with event: NSEvent) {
         switch Int(event.keyCode) {
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            if awaitingConfirmation, selection.width >= minimumSelectionSize, selection.height >= minimumSelectionSize { onFinish?(.region(selection)); return }
+            if windowMode, let index = highlightedWindowIndex, windowHits.indices.contains(index) { onFinish?(.window(windowHits[index].windowID)) }
+        case kVK_LeftArrow, kVK_RightArrow, kVK_UpArrow, kVK_DownArrow:
+            guard didDrag else { return }
+            let step: CGFloat = (event.modifierFlags.contains(.shift) ? 10 : 1) / pixelScale
+            let dx: CGFloat = Int(event.keyCode) == kVK_LeftArrow ? -step : (Int(event.keyCode) == kVK_RightArrow ? step : 0)
+            let dy: CGFloat = Int(event.keyCode) == kVK_DownArrow ? -step : (Int(event.keyCode) == kVK_UpArrow ? step : 0)
+            selection = adjustedSelection(selection, dx: dx, dy: dy, resizing: event.modifierFlags.contains(.option), bounds: selectionBounds, ratio: options.aspectRatio, minimumSize: minimumSelectionSize)
+            awaitingConfirmation = true; changed()
         case kVK_Escape:
             onFinish?(nil)
         case kVK_Space:
@@ -1689,22 +1926,21 @@ final class SelectionView: NSView {
                 isMovingSelection = true
                 moveAnchor = activePoint
                 selectionAtMoveStart = selection
-                needsDisplay = true
-            } else if startPoint == nil, allowsWindows {
+                changed()
+            } else if startPoint == nil, allowsWindows, !event.isARepeat {
                 windowMode.toggle()
+                selection = .zero
+                didDrag = false
+                awaitingConfirmation = false
                 if !windowMode { highlightedWindowIndex = nil }
-                else { updateHighlightedWindow(at: window?.mouseLocationOutsideOfEventStream ?? .zero) }
-                needsDisplay = true
+                else { updateHighlightedWindow(at: convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil)) }
+                changed()
             }
         case kVK_Tab where windowMode && !windowHits.isEmpty:
             let delta = event.modifierFlags.contains(.shift) ? -1 : 1
             let current = highlightedWindowIndex ?? (delta > 0 ? -1 : 0)
             highlightedWindowIndex = (current + delta + windowHits.count) % windowHits.count
-            needsDisplay = true
-        case kVK_Return where windowMode, kVK_ANSI_KeypadEnter where windowMode:
-            if let highlightedWindowIndex, windowHits.indices.contains(highlightedWindowIndex) {
-                onFinish?(.window(windowHits[highlightedWindowIndex].candidate))
-            }
+            changed()
         default:
             super.keyDown(with: event)
         }
@@ -1737,7 +1973,7 @@ final class SelectionView: NSView {
             let hit = windowHits[highlightedWindowIndex]
             reveal(hit.frame, in: context)
             drawBorder(around: hit.frame)
-            let appName = hit.candidate.window.owningApplication?.applicationName ?? "Window"
+            let appName = hit.applicationName
             let labelY = hit.frame.minY >= 38 ? hit.frame.minY - 34 : hit.frame.maxY + 8
             drawPill(appName, centerX: hit.frame.midX, y: labelY)
         }
@@ -1747,13 +1983,14 @@ final class SelectionView: NSView {
             drawBorder(around: selection)
             let width = Int((selection.width * pixelScale).rounded())
             let height = Int((selection.height * pixelScale).rounded())
-            let labelY = selection.minY >= 38 ? selection.minY - 34 : selection.maxY + 8
-            drawPill("\(width) × \(height)", centerX: selection.midX, y: labelY)
-            drawLoupe(at: activePoint)
+            let visible = selection.intersection(bounds)
+            let labelY = visible.minY >= bounds.minY + 38 ? visible.minY - 34 : visible.maxY + 8
+            if !visible.isEmpty { drawPill("\(width) × \(height)", centerX: visible.midX, y: labelY) }
+            if bounds.contains(activePoint) { drawLoupe(at: activePoint) }
         }
 
         let modeHint = allowsWindows ? (windowMode ? "Window snap on  •  Space for region only" : "Region only  •  Space for window snap") : "Region selection"
-        drawPill("\(prompt)  •  \(modeHint)  •  Esc to cancel", centerX: bounds.midX, y: bounds.maxY - 58)
+        drawPill(awaitingConfirmation ? "Arrows move · Option–arrows resize · Return captures · Esc cancels" : "\(prompt) · \(modeHint) · Shift-release to adjust · Esc cancels", centerX: bounds.midX, y: bounds.maxY - 58)
     }
 
     private func updateHighlightedWindow(at point: CGPoint) {
@@ -1787,8 +2024,8 @@ final class SelectionView: NSView {
     private func drawLoupe(at point: CGPoint) {
         guard let image = loupeImage, bounds.width > 0, bounds.height > 0 else { return }
         let pixel = loupePixel(
-            at: point,
-            inside: selection,
+            at: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY),
+            inside: selection.offsetBy(dx: -bounds.minX, dy: -bounds.minY),
             viewSize: bounds.size,
             imageSize: CGSize(width: image.width, height: image.height)
         )
@@ -1805,10 +2042,10 @@ final class SelectionView: NSView {
 
         let size: CGFloat = 126
         let proposedX = point.x + 24 + size <= bounds.maxX ? point.x + 24 : point.x - 24 - size
-        let proposedY = point.y - size - 24 >= 0 ? point.y - size - 24 : point.y + 24
+        let proposedY = point.y - size - 24 >= bounds.minY ? point.y - size - 24 : point.y + 24
         let frame = CGRect(
-            x: min(max(8, proposedX), bounds.maxX - size - 8),
-            y: min(max(8, proposedY), bounds.maxY - size - 8),
+            x: min(max(bounds.minX + 8, proposedX), bounds.maxX - size - 8),
+            y: min(max(bounds.minY + 8, proposedY), bounds.maxY - size - 8),
             width: size,
             height: size
         )
@@ -1851,8 +2088,8 @@ final class SelectionView: NSView {
         let textSize = label.size(withAttributes: attributes)
         let pillSize = NSSize(width: textSize.width + 16, height: textSize.height + 8)
         let origin = CGPoint(
-            x: min(max(centerX - pillSize.width / 2, 8), bounds.maxX - pillSize.width - 8),
-            y: min(max(y, 8), bounds.maxY - pillSize.height - 8)
+            x: min(max(centerX - pillSize.width / 2, bounds.minX + 8), bounds.maxX - pillSize.width - 8),
+            y: min(max(y, bounds.minY + 8), bounds.maxY - pillSize.height - 8)
         )
         NSColor.black.withAlphaComponent(0.78).setFill()
         NSBezierPath(roundedRect: CGRect(origin: origin, size: pillSize), xRadius: 7, yRadius: 7).fill()
@@ -1984,8 +2221,8 @@ final class EditorWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
     private let imageUndoManager = UndoManager()
 
-    init(image: CGImage, copied: Bool, onPin: @escaping (CGImage) -> Void) {
-        let content = EditorViewController(image: image, initialStatus: copied ? "Copied" : "Ready", onPin: onPin)
+    init(image: CGImage, copied: Bool, sourceScale: CGFloat = 1, onPin: @escaping (CGImage) -> Void) {
+        let content = EditorViewController(image: image, initialStatus: copied ? "Copied" : "Ready", sourceScale: sourceScale, onPin: onPin)
         let window = NSWindow(
             contentRect: CGRect(x: 0, y: 0, width: 1040, height: 720),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -2043,6 +2280,10 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
         }
     }
 
+    private let sourceScale: CGFloat
+    private var exportWindow: ImageExportWindow?
+    private var textWindow: TextPreviewWindow?
+    private var redactionWindow: RedactionReviewWindow?
     private let originalImage: CGImage
     private var workingImage: CGImage
     private var imageBounds: CGRect
@@ -2065,7 +2306,8 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
     private var editorKeyMonitor: Any?
     private var nextStepNumber = 1
 
-    init(image: CGImage, initialStatus: String, onPin: @escaping (CGImage) -> Void) {
+    init(image: CGImage, initialStatus: String, sourceScale: CGFloat = 1, onPin: @escaping (CGImage) -> Void) {
+        self.sourceScale = sourceScale
         originalImage = image
         workingImage = image
         let bounds = CGRect(x: 0, y: 0, width: image.width, height: image.height)
@@ -2251,7 +2493,8 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
     private func installEditorKeyMonitor() {
         guard editorKeyMonitor == nil else { return }
         editorKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            self?.handleEditorKeyEvent(event) ?? event
+            guard let self else { return event }
+            return self.handleEditorKeyEvent(event)
         }
     }
 
@@ -2404,6 +2647,7 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
 
     func makeMoreMenu() -> NSMenu {
         let menu = NSMenu()
+        menu.autoenablesItems = false
         let undo = editorMenuItem("Undo Image Change", action: #selector(undoImageChange), key: "z")
         undo.isEnabled = view.window?.undoManager?.canUndo == true
         menu.addItem(undo)
@@ -2412,6 +2656,8 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
         redo.isEnabled = view.window?.undoManager?.canRedo == true
         menu.addItem(redo)
         menu.addItem(.separator())
+        menu.addItem(editorMenuItem("Review Suggested Redactions…", action: #selector(reviewRedactions)))
+        menu.addItem(editorMenuItem("Preview Structured Text…", action: #selector(previewStructuredText)))
         menu.addItem(editorMenuItem("Redact…", action: #selector(beginRedact)))
         menu.addItem(editorMenuItem("Blur (Not Secure)…", action: #selector(beginBlur)))
         menu.addItem(.separator())
@@ -2422,7 +2668,8 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
         menu.addItem(editorMenuItem("Reset Image", action: #selector(resetImage)))
         menu.addItem(.separator())
         menu.addItem(editorMenuItem("Pin Above Windows", action: #selector(pinImage)))
-        menu.addItem(editorMenuItem("Save PNG…", action: #selector(savePNG), key: "s"))
+        menu.addItem(editorMenuItem("Export PNG / JPEG…", action: #selector(exportImage), key: "s"))
+        menu.addItem(editorMenuItem("Save PNG Directly…", action: #selector(savePNG)))
         let shareProvider = makeShareProvider()
         let picker = NSSharingServicePicker(items: [shareProvider])
         sharingPicker = picker
@@ -2641,6 +2888,45 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
         }
     }
 
+    @objc private func exportImage() {
+        withFlattenedImage("Preparing export…") { [weak self] image in
+            guard let self else { return }; self.exportWindow?.close()
+            let window = ImageExportWindow(image: image, sourceScale: self.sourceScale)
+            self.exportWindow = window; window.onClose = { [weak self] in self?.exportWindow = nil }
+            window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil)
+            self.report("Export preview opened")
+        }
+    }
+    @objc private func previewStructuredText() {
+        withFlattenedImage("Preparing text preview…") { [weak self] image in
+            guard let self else { return }; self.textWindow?.close()
+            let window = TextPreviewWindow(image: image); self.textWindow = window
+            window.onClose = { [weak self] in self?.textWindow = nil }; window.showWindow(nil); window.window?.makeKeyAndOrderFront(nil)
+            self.report("Text preview opened")
+        }
+    }
+    @objc private func reviewRedactions() {
+        guard let previous = currentSnapshot() else { return }
+        withFlattenedImage("Preparing redaction review…") { [weak self] image in
+            guard let self else { return }; self.redactionWindow?.close()
+            let window = RedactionReviewWindow(image: image, actionTitle: "Apply to Editor", copiesOnApproval: false) { [weak self] result, _ in
+                self?.replaceWithFlattenedImage(result, previous: previous, status: "Redactions applied — copy when ready")
+            }
+            self.redactionWindow = window; window.onClose = { [weak self] in self?.redactionWindow = nil }
+            if let parent = self.view.window, let sheet = window.window { parent.beginSheet(sheet) }
+            self.report("Review redactions before applying")
+        }
+    }
+    private func withFlattenedImage(_ message: String, completion: @escaping (CGImage) -> Void) {
+        guard actionTask == nil, regionOverlay == nil else { return }; beginImageAction(message)
+        actionTask = Task { @MainActor [weak self] in
+            defer { self?.finishImageAction() }
+            guard let self else { return }
+            do { let image = try await self.renderEditedImage(); try Task.checkCancellation(); completion(image) }
+            catch is CancellationError {} catch { self.report(error.localizedDescription, beep: true) }
+        }
+    }
+
     @objc private func savePNG() {
         guard actionTask == nil, regionOverlay == nil, let window = view.window else { return }
         let panel = NSSavePanel()
@@ -2671,7 +2957,7 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
     }
 
     @objc func saveDocument(_ sender: Any?) {
-        savePNG()
+        exportImage()
     }
 
     @objc private func pinImage() {
@@ -2852,6 +3138,7 @@ final class EditorViewController: NSViewController, @preconcurrency PaperMarkupV
     }
 
     func cancelPendingAction() {
+        exportWindow?.close(); textWindow?.close(); redactionWindow?.close()
         removeEditorKeyMonitor()
         actionTask?.cancel()
         actionTask = nil

@@ -1,9 +1,17 @@
 import AppKit
 import Carbon.HIToolbox
 import CoreGraphics
+import ScreenCaptureKit
 import UniformTypeIdentifiers
 import XCTest
 @testable import ScreenWren
+
+@MainActor
+private final class KeyEventReceiver: NSView {
+    var keyCodes: [UInt16] = []
+    override var acceptsFirstResponder: Bool { true }
+    override func keyDown(with event: NSEvent) { keyCodes.append(event.keyCode) }
+}
 
 final class ScreenWrenLogicTests: XCTestCase {
     func testScreenCapturePermissionPhasesIncludeAnActionableRelaunchState() {
@@ -11,6 +19,92 @@ final class ScreenWrenLogicTests: XCTestCase {
         XCTAssertEqual(screenCapturePermissionPhase(isAllowed: false, wasRequested: false, requestGranted: false), .needsPermission)
         XCTAssertEqual(screenCapturePermissionPhase(isAllowed: false, wasRequested: true, requestGranted: false), .openSettings)
         XCTAssertEqual(screenCapturePermissionPhase(isAllowed: false, wasRequested: true, requestGranted: true), .needsRelaunch)
+    }
+
+    func testScreenCapturePermissionErrorsAreDistinguishedFromOtherFailures() {
+        XCTAssertTrue(isScreenCapturePermissionError(NSError(
+            domain: SCStreamErrorDomain, code: SCStreamError.Code.userDeclined.rawValue
+        )))
+        XCTAssertFalse(isScreenCapturePermissionError(NSError(domain: SCStreamErrorDomain, code: -3802)))
+        XCTAssertFalse(isScreenCapturePermissionError(NSError(domain: NSCocoaErrorDomain, code: -3801)))
+    }
+
+    @MainActor
+    private func permissionButton(_ title: String, in controller: ReadinessWindowController) throws -> NSButton {
+        var views = [try XCTUnwrap(controller.window?.contentViewController?.view)]
+        while let view = views.popLast() {
+            if let button = view as? NSButton, button.title == title { return button }
+            views.append(contentsOf: view.subviews)
+        }
+        throw NSError(domain: "ScreenWrenTests.MissingButton", code: 1, userInfo: [NSLocalizedDescriptionKey: title])
+    }
+
+    @MainActor
+    func testPermissionDenialOpensSettingsOnceRequestedAndKeepsRestartAvailable() throws {
+        _ = NSApplication.shared
+        var allowed = false
+        var requests = 0
+        var settingsOpened = 0
+        var captures = 0
+        let controller = ReadinessWindowController(
+            shortcutManager: ShortcutManager(actions: [:]),
+            launchAtLogin: LaunchAtLoginController(),
+            accessCheck: { allowed },
+            accessRequest: { requests += 1; return false },
+            settingsOpener: { settingsOpened += 1; return true }
+        )
+        controller.onTryCapture = { captures += 1 }
+        XCTAssertTrue(try permissionButton("Quit & Reopen ScreenWren", in: controller).isEnabled)
+        let settings = try permissionButton("Open Screen Recording Settings", in: controller)
+        settings.performClick(nil)
+        XCTAssertEqual(requests, 1)
+        XCTAssertEqual(settingsOpened, 1)
+        settings.performClick(nil)
+        XCTAssertEqual(requests, 1, "Do not repeatedly trigger a previously answered system prompt")
+        XCTAssertEqual(settingsOpened, 2)
+        XCTAssertTrue(try permissionButton("Quit & Reopen ScreenWren", in: controller).isEnabled)
+
+        allowed = true
+        try permissionButton("Check Again", in: controller).performClick(nil)
+        XCTAssertEqual(captures, 0, "Approval must not capture the screen automatically")
+        try permissionButton("Start Capture", in: controller).performClick(nil)
+        XCTAssertEqual(captures, 1)
+    }
+
+    @MainActor
+    func testImmediatePermissionGrantDoesNotOpenSettingsOrStartCapture() throws {
+        _ = NSApplication.shared
+        var allowed = false
+        var settingsOpened = 0
+        var captures = 0
+        let controller = ReadinessWindowController(
+            shortcutManager: ShortcutManager(actions: [:]),
+            launchAtLogin: LaunchAtLoginController(),
+            accessCheck: { allowed },
+            accessRequest: { allowed = true; return true },
+            settingsOpener: { settingsOpened += 1; return true }
+        )
+        controller.onTryCapture = { captures += 1 }
+        try permissionButton("Open Screen Recording Settings", in: controller).performClick(nil)
+        XCTAssertEqual(settingsOpened, 0)
+        XCTAssertEqual(captures, 0)
+        XCTAssertTrue(try permissionButton("Start Capture", in: controller).isEnabled)
+    }
+
+    @MainActor
+    func testCaptureDenialOverridesAnAllowedPreflightUntilRelaunch() throws {
+        _ = NSApplication.shared
+        let controller = ReadinessWindowController(
+            shortcutManager: ShortcutManager(actions: [:]),
+            launchAtLogin: LaunchAtLoginController(),
+            accessCheck: { true },
+            accessRequest: { XCTFail("Checking status must not request access"); return false },
+            settingsOpener: { XCTFail("Checking status must not open Settings"); return false }
+        )
+        XCTAssertTrue(try permissionButton("Start Capture", in: controller).isEnabled)
+        controller.capturePermissionWasDenied()
+        try permissionButton("Check Again", in: controller).performClick(nil)
+        XCTAssertTrue(try permissionButton("Quit & Reopen ScreenWren", in: controller).isEnabled)
     }
 
     func testCaptureGenerationRejectsStaleCompletion() {
@@ -67,6 +161,141 @@ final class ScreenWrenLogicTests: XCTestCase {
             .repeatCapture: nil,
         ]
         XCTAssertEqual(conflictingShortcutCommands(values), [.capture, .copyText])
+    }
+
+    func testShortcutConflictsUsePhysicalKeysInsteadOfDisplayLabels() throws {
+        let original = try XCTUnwrap(ShortcutCommand.copyText.defaultShortcut)
+        let recorded = Shortcut(
+            keyCode: original.keyCode,
+            carbonModifiers: original.carbonModifiers,
+            keyEquivalent: "@",
+            keyLabel: "@"
+        )
+        XCTAssertEqual(
+            conflictingShortcutCommands([.copyText: original, .frontWindow: recorded]),
+            [.copyText, .frontWindow]
+        )
+    }
+
+    @MainActor
+    func testShortcutUpdateRejectsConflictBeforeChangingStoredShortcut() throws {
+        let suiteName = "ScreenWrenTests.ShortcutConflict.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = ShortcutStore(defaults: defaults)
+        let manager = ShortcutManager(store: store, actions: [:])
+        let original = try XCTUnwrap(ShortcutCommand.copyText.defaultShortcut)
+        let recorded = Shortcut(
+            keyCode: original.keyCode,
+            carbonModifiers: original.carbonModifiers,
+            keyEquivalent: "@",
+            keyLabel: "@"
+        )
+        XCTAssertEqual(manager.update(.frontWindow, to: recorded), "That shortcut is already assigned in ScreenWren.")
+        XCTAssertNil(store.shortcut(for: .frontWindow))
+        XCTAssertTrue(manager.failures.isEmpty)
+    }
+
+    @MainActor
+    func testCaptureSelectorCanReceiveKeyboardInput() throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.main)
+        let selector = SelectionWindowController(screen: screen, prompt: "Test capture", allowsWindows: true) { _ in }
+        let window = try XCTUnwrap(selector.window)
+        XCTAssertTrue(window.canBecomeKey, "Escape, Space, Tab, and Return require a key window")
+        XCTAssertTrue(window.firstResponder is SelectionView)
+    }
+
+    @MainActor
+    func testSelectorStartsWithRegionCrosshairsAndWindowSelectionIsOptIn() throws {
+        let view = SelectionView(
+            frame: CGRect(x: 0, y: 0, width: 400, height: 300),
+            pixelScale: 2, prompt: "Drag to capture a region", allowsWindows: true
+        )
+        XCTAssertFalse(view.windowMode)
+        func space(repeating: Bool = false) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: 0, context: nil, characters: " ", charactersIgnoringModifiers: " ",
+                isARepeat: repeating, keyCode: UInt16(kVK_Space)
+            ))
+        }
+        view.keyDown(with: try space())
+        XCTAssertTrue(view.windowMode)
+        view.keyDown(with: try space(repeating: true))
+        XCTAssertTrue(view.windowMode, "Holding Space must not repeatedly change modes")
+        view.keyDown(with: try space())
+        XCTAssertFalse(view.windowMode)
+    }
+
+    @MainActor
+    func testSelectorEscapeCancelsWithoutSelectingAnything() throws {
+        _ = NSApplication.shared
+        let screen = try XCTUnwrap(NSScreen.main)
+        var cancelled = false
+        let controller = SelectionWindowController(screen: screen, prompt: "Test", allowsWindows: true) { target in
+            XCTAssertNil(target)
+            cancelled = true
+        }
+        let view = try XCTUnwrap(controller.window?.contentView as? SelectionView)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(
+            with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: 0, context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false, keyCode: UInt16(kVK_Escape)
+        ))
+        view.keyDown(with: escape)
+        XCTAssertTrue(cancelled)
+        XCTAssertFalse(controller.window?.isVisible ?? true)
+    }
+
+    @MainActor
+    func testOrdinaryLaunchAndReopenDoNotShowWindows() async {
+        let app = NSApplication.shared
+        func visibleContentWindows() -> Set<ObjectIdentifier> {
+            Set(app.windows.filter { $0.isVisible && $0.level != .statusBar }.map(ObjectIdentifier.init))
+        }
+        let visibleBefore = visibleContentWindows()
+        let delegate = AppDelegate()
+        delegate.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification))
+        // Drain launch work scheduled on the main queue as well as the launch callback.
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+        XCTAssertEqual(visibleContentWindows(), visibleBefore)
+        XCTAssertFalse(delegate.applicationShouldHandleReopen(app, hasVisibleWindows: false))
+        XCTAssertEqual(visibleContentWindows(), visibleBefore)
+    }
+
+    @MainActor
+    func testEditorMonitorConsumesHandledKeysAndForwardsOtherKeys() throws {
+        _ = NSApplication.shared
+        let image = try renderCGImage(width: 80, height: 60) { _ in }
+        let controller = EditorWindowController(image: image, copied: false) { _ in }
+        let window = try XCTUnwrap(controller.window)
+        let editor = try XCTUnwrap(controller.contentViewController as? EditorViewController)
+        editor.loadViewIfNeeded()
+        window.makeKeyAndOrderFront(nil)
+        let receiver = KeyEventReceiver(frame: CGRect(x: 0, y: 0, width: 20, height: 20))
+        editor.view.addSubview(receiver)
+        XCTAssertTrue(window.makeFirstResponder(receiver))
+        editor.viewDidAppear()
+        defer {
+            editor.cancelPendingAction()
+            window.orderOut(nil)
+        }
+
+        func sendKey(_ keyCode: Int, characters: String) throws {
+            let event = try XCTUnwrap(NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: characters,
+                charactersIgnoringModifiers: characters, isARepeat: false, keyCode: UInt16(keyCode)
+            ))
+            NSApp.sendEvent(event)
+        }
+        try sendKey(kVK_ANSI_X, characters: "x")
+        XCTAssertEqual(receiver.keyCodes, [UInt16(kVK_ANSI_X)])
+        try sendKey(kVK_Escape, characters: "\u{1b}")
+        XCTAssertEqual(receiver.keyCodes, [UInt16(kVK_ANSI_X)], "Handled Escape must not reach the responder again")
     }
 
     func testRepeatTargetUsesSpecificMenuLabel() {
@@ -176,6 +405,17 @@ final class ScreenWrenLogicTests: XCTestCase {
         XCTAssertTrue(name.hasSuffix(".png"))
         XCTAssertFalse(name.contains(":"))
         XCTAssertFalse(name.contains("/"))
+    }
+
+    func testScrollingMemoryLimitCoversFirstFrameAndAccumulatedFrames() throws {
+        let limit = 256 * 1_024 * 1_024
+        XCTAssertEqual(try checkedScrollingMemoryUsage(currentBytes: 0, adding: limit), limit)
+        XCTAssertEqual(try checkedScrollingMemoryUsage(currentBytes: limit - 4, adding: 4), limit)
+        for (current, added) in [(0, limit + 1), (limit, 4), (Int.max, 1)] {
+            XCTAssertThrowsError(try checkedScrollingMemoryUsage(currentBytes: current, adding: added)) {
+                XCTAssertEqual($0 as? ImageOperationsError, .outputTooLarge)
+            }
+        }
     }
 
     func testOCRReadingOrderIsTopToBottomThenLeftToRight() {
@@ -290,7 +530,7 @@ final class ScreenWrenLogicTests: XCTestCase {
         for expected in [
             "Redact…", "Blur (Not Secure)…", "Crop…", "Resize…",
             "Rotate Left", "Rotate Right", "Reset Image", "Pin Above Windows",
-            "Save PNG…",
+            "Export PNG / JPEG…",
         ] {
             XCTAssertTrue(titles.contains(expected), "Missing editor action: \(expected)")
         }
@@ -298,6 +538,9 @@ final class ScreenWrenLogicTests: XCTestCase {
         let redo = try XCTUnwrap(menu.items.first(where: { $0.title == "Redo Image Change" }))
         XCTAssertEqual(redo.keyEquivalent, "Z")
         XCTAssertTrue(redo.keyEquivalentModifierMask.contains([.command, .shift]))
+        menu.update()
+        XCTAssertFalse(redo.isEnabled, "Opening the menu must preserve the unavailable undo/redo state")
+        XCTAssertFalse(try XCTUnwrap(menu.items.first(where: { $0.title == "Undo Image Change" })).isEnabled)
         XCTAssertTrue(editor.responds(to: #selector(EditorViewController.saveDocument(_:))))
     }
 
@@ -310,7 +553,10 @@ final class ScreenWrenLogicTests: XCTestCase {
         let manager = ShortcutManager(store: ShortcutStore(defaults: defaults), actions: [:])
         let readiness = ReadinessWindowController(
             shortcutManager: manager,
-            launchAtLogin: LaunchAtLoginController()
+            launchAtLogin: LaunchAtLoginController(),
+            accessCheck: { false },
+            accessRequest: { false },
+            settingsOpener: { false }
         )
         let window = try XCTUnwrap(readiness.window)
         let root = try XCTUnwrap(window.contentViewController?.view)
@@ -328,7 +574,11 @@ final class ScreenWrenLogicTests: XCTestCase {
         XCTAssertTrue(text.contains("Keyboard Shortcuts"))
         XCTAssertEqual(views.compactMap { $0 as? ShortcutRecorderField }.count, ShortcutCommand.allCases.count)
         XCTAssertGreaterThan(views.filter { !$0.frame.isEmpty }.count, 20)
-        XCTAssertEqual(root.bounds.size, CGSize(width: 620, height: 690))
+        XCTAssertEqual(root.bounds.size, CGSize(width: 620, height: 740))
+        let buttons = views.compactMap { $0 as? NSButton }
+        for title in ["Open Screen Recording Settings", "Check Again", "Show This Copy in Finder", "Quit & Reopen ScreenWren"] {
+            XCTAssertNotNil(buttons.first { $0.title == title && $0.isEnabled })
+        }
 
         if let output = ProcessInfo.processInfo.environment["SCREENWREN_READINESS_PREVIEW"] {
             let representation = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
@@ -355,6 +605,15 @@ final class ScreenWrenLogicTests: XCTestCase {
         let redo = try XCTUnwrap(editMenu.items.first(where: { $0.title == "Redo" }))
         XCTAssertEqual(redo.keyEquivalent, "Z")
         XCTAssertTrue(redo.keyEquivalentModifierMask.contains([.command, .shift]))
+        for (key, action) in [
+            ("x", #selector(NSText.cut(_:))), ("c", #selector(NSText.copy(_:))),
+            ("v", #selector(NSText.paste(_:))), ("a", #selector(NSText.selectAll(_:))),
+        ] {
+            let item = try XCTUnwrap(editMenu.items.first(where: { $0.action == action }))
+            XCTAssertEqual(item.keyEquivalent, key)
+            XCTAssertEqual(item.keyEquivalentModifierMask, [.command])
+            XCTAssertNil(item.target, "Standard editing commands must follow the first responder")
+        }
     }
 
     @MainActor

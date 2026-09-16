@@ -114,6 +114,8 @@ final class PNGPromiseDragView: NSImageView, NSDraggingSource {
         self.image = image
         imageAlignment = .alignCenter
         imageScaling = .scaleProportionallyUpOrDown
+        setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        setContentCompressionResistancePriority(.defaultLow, for: .vertical)
         setAccessibilityElement(true)
         setAccessibilityRole(.image)
         setAccessibilityLabel("Drag image as PNG")
@@ -161,43 +163,66 @@ final class PNGPromiseDragView: NSImageView, NSDraggingSource {
 @MainActor
 final class PinnedWindowController: NSWindowController, NSWindowDelegate {
     var onClose: (() -> Void)?
+    private let opacity = NSSlider(value: 100, minValue: 20, maxValue: 100, target: nil, action: nil)
+    private let zoom = NSSlider(value: 100, minValue: 25, maxValue: 200, target: nil, action: nil)
+    private let lock = NSButton(checkboxWithTitle: "Click through", target: nil, action: nil)
+    private let baseSize: CGSize
 
-    init(image: CGImage) {
-        let imageSize = NSSize(width: image.width, height: image.height)
-        let nsImage = NSImage(cgImage: image, size: imageSize)
-        let dragView = PNGPromiseDragView(image: nsImage) {
-            makePNGFilePromiseProvider {
-                try await pngDataOffMain(for: image)
-            }
+    init(image: CGImage, sourceScale: CGFloat = 1) {
+        let imageSize = CGSize(
+            width: CGFloat(image.width) / max(1, sourceScale), height: CGFloat(image.height) / max(1, sourceScale))
+        let available = NSScreen.main?.visibleFrame.insetBy(dx: 80, dy: 80).size ?? CGSize(width: 900, height: 700)
+        let fit = min(1, available.width / imageSize.width, (available.height - 75) / imageSize.height)
+        baseSize = CGSize(width: max(320, imageSize.width * fit), height: max(100, imageSize.height * fit))
+        let dragView = PNGPromiseDragView(image: NSImage(cgImage: image, size: imageSize)) {
+            makePNGFilePromiseProvider { try await pngDataOffMain(for: image) }
         }
-
-        let available = NSScreen.main?.visibleFrame.insetBy(dx: 80, dy: 80).size
-            ?? NSSize(width: 900, height: 700)
-        let scale = min(1, available.width / imageSize.width, available.height / imageSize.height)
-        let contentSize = NSSize(width: imageSize.width * scale, height: imageSize.height * scale)
         let window = NSPanel(
-            contentRect: CGRect(origin: .zero, size: contentSize),
-            styleMask: [.titled, .closable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.contentView = dragView
-        window.contentAspectRatio = imageSize
-        window.title = "Pinned Capture"
-        window.level = .floating
-        window.isFloatingPanel = true
-        window.hidesOnDeactivate = false
-        window.isReleasedWhenClosed = false
-        window.center()
-
-        super.init(window: window)
-        window.delegate = self
+            contentRect: CGRect(origin: .zero, size: CGSize(width: baseSize.width, height: baseSize.height + 75)),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "Pinned Capture"; window.level = .floating; window.isFloatingPanel = true;
+        window.hidesOnDeactivate = false; window.isReleasedWhenClosed = false
+        window.minSize = CGSize(width: 320, height: 200); window.center()
+        super.init(window: window); window.delegate = self
+        opacity.target = self; opacity.action = #selector(changeOpacity); opacity.setAccessibilityLabel("Pin opacity")
+        zoom.target = self; zoom.action = #selector(changeZoom); zoom.setAccessibilityLabel("Pin zoom")
+        lock.target = self; lock.action = #selector(changeLock)
+        let controls = NSStackView(views: [
+            NSTextField(labelWithString: "Opacity"), opacity, NSTextField(labelWithString: "Zoom"), zoom,
+        ]); controls.spacing = 8
+        NSLayoutConstraint.activate([
+            opacity.widthAnchor.constraint(equalTo: zoom.widthAnchor),
+            zoom.widthAnchor.constraint(greaterThanOrEqualToConstant: 60),
+        ])
+        let help = NSTextField(
+            wrappingLabelWithString: "Unlock from ScreenWren’s menu. Use Toggle Pins to hide or restore all references."
+        ); help.font = .systemFont(ofSize: 10); help.textColor = .secondaryLabelColor
+        let bottom = NSStackView(views: [lock, help]); bottom.spacing = 8
+        let content = NSStackView(views: [dragView, controls, bottom]); content.orientation = .vertical;
+        content.spacing = 6; content.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView?.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: window.contentView!.leadingAnchor, constant: 8),
+            content.trailingAnchor.constraint(equalTo: window.contentView!.trailingAnchor, constant: -8),
+            content.topAnchor.constraint(equalTo: window.contentView!.topAnchor, constant: 8),
+            content.bottomAnchor.constraint(equalTo: window.contentView!.bottomAnchor, constant: -8),
+            dragView.widthAnchor.constraint(equalTo: content.widthAnchor),
+            dragView.heightAnchor.constraint(greaterThanOrEqualToConstant: 80),
+            controls.widthAnchor.constraint(equalTo: content.widthAnchor),
+            bottom.widthAnchor.constraint(equalTo: content.widthAnchor),
+        ])
     }
-
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-    func windowWillClose(_ notification: Notification) {
-        onClose?()
-        onClose = nil
+    @objc private func changeOpacity() { window?.alphaValue = opacity.doubleValue / 100 }
+    @objc private func changeZoom() {
+        guard let window else { return }; let ratio = zoom.doubleValue / 100
+        let available = (window.screen ?? NSScreen.main)?.visibleFrame.size ?? CGSize(width: 1000, height: 800)
+        window.setContentSize(
+            CGSize(
+                width: min(available.width - 20, max(320, baseSize.width * ratio)),
+                height: min(available.height - 45, max(150, baseSize.height * ratio + 75))))
     }
+    @objc private func changeLock() { window?.ignoresMouseEvents = lock.state == .on }
+    func unlock() { lock.state = .off; window?.ignoresMouseEvents = false }
+    func windowWillClose(_ notification: Notification) { onClose?(); onClose = nil }
 }

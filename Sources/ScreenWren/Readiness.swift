@@ -26,6 +26,8 @@ enum ShortcutCommand: String, CaseIterable, Codable {
     case repeatCapture
     case frontWindow
     case freeze
+    case recents
+    case togglePins
 
     var identifier: UInt32 {
         switch self {
@@ -34,6 +36,8 @@ enum ShortcutCommand: String, CaseIterable, Codable {
         case .repeatCapture: 3
         case .frontWindow: 4
         case .freeze: 5
+        case .recents: 6
+        case .togglePins: 7
         }
     }
 
@@ -44,6 +48,8 @@ enum ShortcutCommand: String, CaseIterable, Codable {
         case .repeatCapture: "Repeat Last Capture"
         case .frontWindow: "Capture Front Window"
         case .freeze: "Freeze Screen & Select"
+        case .recents: "Browse Recent Captures"
+        case .togglePins: "Hide / Restore All Pins"
         }
     }
 
@@ -55,6 +61,10 @@ enum ShortcutCommand: String, CaseIterable, Codable {
             Shortcut(keyCode: UInt32(kVK_ANSI_2), carbonModifiers: UInt32(cmdKey | shiftKey | optionKey), keyEquivalent: "2", keyLabel: "2")
         case .repeatCapture:
             Shortcut(keyCode: UInt32(kVK_ANSI_2), carbonModifiers: UInt32(cmdKey | shiftKey | controlKey), keyEquivalent: "2", keyLabel: "2")
+        case .recents:
+            Shortcut(keyCode: UInt32(kVK_ANSI_P), carbonModifiers: UInt32(controlKey | shiftKey), keyEquivalent: "p", keyLabel: "P")
+        case .togglePins:
+            Shortcut(keyCode: UInt32(kVK_ANSI_P), carbonModifiers: UInt32(controlKey | optionKey), keyEquivalent: "p", keyLabel: "P")
         case .frontWindow, .freeze:
             nil
         }
@@ -62,10 +72,19 @@ enum ShortcutCommand: String, CaseIterable, Codable {
 }
 
 struct Shortcut: Codable, Equatable, Hashable {
+    struct KeyCombination: Hashable {
+        let keyCode: UInt32
+        let carbonModifiers: UInt32
+    }
+
     let keyCode: UInt32
     let carbonModifiers: UInt32
     let keyEquivalent: String
     let keyLabel: String
+
+    var keyCombination: KeyCombination {
+        KeyCombination(keyCode: keyCode, carbonModifiers: carbonModifiers)
+    }
 
     var modifierFlags: NSEvent.ModifierFlags {
         var flags: NSEvent.ModifierFlags = []
@@ -111,10 +130,10 @@ struct Shortcut: Codable, Equatable, Hashable {
 func conflictingShortcutCommands(
     _ values: [ShortcutCommand: Shortcut?]
 ) -> Set<ShortcutCommand> {
-    var commandsByShortcut: [Shortcut: [ShortcutCommand]] = [:]
+    var commandsByShortcut: [Shortcut.KeyCombination: [ShortcutCommand]] = [:]
     for (command, optionalShortcut) in values {
         guard let shortcut = optionalShortcut else { continue }
-        commandsByShortcut[shortcut, default: []].append(command)
+        commandsByShortcut[shortcut.keyCombination, default: []].append(command)
     }
     return Set(commandsByShortcut.values.filter { $0.count > 1 }.flatMap { $0 })
 }
@@ -146,6 +165,23 @@ final class ShortcutStore {
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
+        preserveConfiguredShortcuts()
+    }
+
+    private func isConfigured(_ command: ShortcutCommand) -> Bool {
+        defaults.object(forKey: prefix + command.rawValue + ".configured") != nil
+    }
+
+    private func preserveConfiguredShortcuts() {
+        let savedKeys = Set(ShortcutCommand.allCases.filter(isConfigured).compactMap {
+            shortcut(for: $0)?.keyCombination
+        })
+        for command in ShortcutCommand.allCases where !isConfigured(command) {
+            if let shortcut = command.defaultShortcut, savedKeys.contains(shortcut.keyCombination) {
+                // New defaults must not disable an existing user assignment on upgrade.
+                set(nil, for: command)
+            }
+        }
     }
 
     func shortcut(for command: ShortcutCommand) -> Shortcut? {
@@ -230,7 +266,9 @@ final class ShortcutManager {
             return "Include Command, Control, or Option."
         }
         if let shortcut,
-           ShortcutCommand.allCases.contains(where: { $0 != command && store.shortcut(for: $0) == shortcut }) {
+           ShortcutCommand.allCases.contains(where: {
+               $0 != command && store.shortcut(for: $0)?.keyCombination == shortcut.keyCombination
+           }) {
             return "That shortcut is already assigned in ScreenWren."
         }
 
@@ -383,6 +421,9 @@ final class ShortcutRecorderField: NSTextField {
 final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
     private let shortcutManager: ShortcutManager
     private let launchAtLogin: LaunchAtLoginController
+    private let accessCheck: () -> Bool
+    private let accessRequest: () -> Bool
+    private let settingsOpener: () -> Bool
     private let permissionStatus = NSTextField(labelWithString: "")
     private let permissionIcon = NSImageView()
     private let permissionButton = NSButton()
@@ -394,16 +435,29 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
     private let secondaryButton = NSButton()
     private var permissionWasRequested = false
     private var permissionRequestGranted = false
+    private var captureWasDenied = false
     private var dismissed = false
 
     var onTryCapture: (() -> Void)?
     var onDismiss: (() -> Void)?
 
-    init(shortcutManager: ShortcutManager, launchAtLogin: LaunchAtLoginController) {
+    init(
+        shortcutManager: ShortcutManager,
+        launchAtLogin: LaunchAtLoginController,
+        accessCheck: @escaping () -> Bool = CGPreflightScreenCaptureAccess,
+        accessRequest: @escaping () -> Bool = CGRequestScreenCaptureAccess,
+        settingsOpener: @escaping () -> Bool = {
+            guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return false }
+            return NSWorkspace.shared.open(url)
+        }
+    ) {
         self.shortcutManager = shortcutManager
         self.launchAtLogin = launchAtLogin
+        self.accessCheck = accessCheck
+        self.accessRequest = accessRequest
+        self.settingsOpener = settingsOpener
         let window = NSWindow(
-            contentRect: CGRect(x: 0, y: 0, width: 620, height: 690),
+            contentRect: CGRect(x: 0, y: 0, width: 620, height: 740),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -415,7 +469,7 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
         super.init(window: window)
         window.delegate = self
         window.contentViewController = makeContentController()
-        window.setContentSize(NSSize(width: 620, height: 690))
+        window.setContentSize(NSSize(width: 620, height: 740))
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(refresh),
@@ -440,22 +494,34 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
         finishDismissal()
     }
 
+    func capturePermissionWasDenied() {
+        captureWasDenied = true
+        permissionWasRequested = true
+        refresh()
+    }
+
     @objc private func requestOrOpenPermission() {
-        switch permissionPhase {
-        case .allowed, .openSettings:
-            openScreenCaptureSettings()
-        case .needsPermission:
+        if permissionPhase == .needsPermission {
             permissionWasRequested = true
-            permissionRequestGranted = CGRequestScreenCaptureAccess()
+            permissionRequestGranted = accessRequest()
             refresh()
-        case .needsRelaunch:
-            relaunch()
+            if permissionPhase == .allowed { return }
         }
+        // A denied or previously answered system prompt may not appear again.
+        // Always provide a real next step instead of leaving a dead Allow button.
+        openScreenCaptureSettings()
     }
 
     @objc private func openScreenCaptureSettings() {
-        guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") else { return }
-        NSWorkspace.shared.open(url)
+        guard settingsOpener() else {
+            messageLabel.stringValue = "Open System Settings → Privacy & Security → Screen & System Audio Recording."
+            return
+        }
+        messageLabel.stringValue = "Enable this copy of ScreenWren, then use Quit & Reopen."
+    }
+
+    @objc private func revealCurrentCopy() {
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -484,11 +550,8 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
 
     @objc private func primaryAction() {
         switch permissionPhase {
-        case .needsRelaunch:
+        case .needsPermission, .openSettings, .needsRelaunch:
             relaunch()
-            return
-        case .needsPermission, .openSettings:
-            requestOrOpenPermission()
             return
         case .allowed:
             break
@@ -500,13 +563,13 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
 
     private var permissionPhase: ScreenCapturePermissionPhase {
         screenCapturePermissionPhase(
-            isAllowed: CGPreflightScreenCaptureAccess(),
+            isAllowed: !captureWasDenied && accessCheck(),
             wasRequested: permissionWasRequested,
             requestGranted: permissionRequestGranted
         )
     }
 
-    private func relaunch() {
+    @objc private func relaunch() {
         let executable = Bundle.main.bundleURL
             .appendingPathComponent("Contents/Library/LoginItems/ScreenWrenLoginItem.app/Contents/MacOS/ScreenWrenLoginItem")
         guard FileManager.default.isExecutableFile(atPath: executable.path) else {
@@ -534,17 +597,11 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
         permissionIcon.contentTintColor = allowed ? .systemGreen : .systemOrange
         permissionStatus.stringValue = switch phase {
         case .allowed: "Allowed"
-        case .needsPermission: "Required for screenshots"
-        case .openSettings: "Open System Settings to allow"
-        case .needsRelaunch: "Relaunch required"
+        case .needsPermission, .openSettings: "Not available to this copy"
+        case .needsRelaunch: "Restart to recheck access"
         }
         permissionStatus.textColor = allowed ? .systemGreen : .systemOrange
-        permissionButton.title = switch phase {
-        case .allowed: "Open Settings"
-        case .needsPermission: "Allow Screen Capture"
-        case .openSettings: "Open System Settings"
-        case .needsRelaunch: "Quit & Reopen ScreenWren"
-        }
+        permissionButton.title = "Open Screen Recording Settings"
 
         let active = ShortcutCommand.allCases.filter { shortcutManager.shortcut(for: $0) != nil }.count
         if shortcutManager.failures.isEmpty {
@@ -559,9 +616,7 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
         launchStatus.stringValue = launchAtLogin.statusText
         primaryButton.title = switch phase {
         case .allowed: "Start Capture"
-        case .needsPermission: "Allow Screen Capture"
-        case .openSettings: "Open System Settings"
-        case .needsRelaunch: "Quit & Reopen ScreenWren"
+        case .needsPermission, .openSettings, .needsRelaunch: "Quit & Reopen ScreenWren"
         }
         secondaryButton.title = allowed ? "Done" : "Not Now"
     }
@@ -608,14 +663,19 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
         permissionButton.action = #selector(requestOrOpenPermission)
         permissionButton.bezelStyle = .rounded
         let permissionBody = label(
-            "macOS groups screen capture with system audio. ScreenWren captures still images only and does not record audio or video.",
+            "Enable ScreenWren in System Settings, then Quit & Reopen below. If it is already enabled but capture is blocked, remove the old ScreenWren entry and add this copy again. ScreenWren captures still images only; it does not record audio.",
             size: 12,
             color: .secondaryLabelColor
         )
-        permissionBody.maximumNumberOfLines = 3
+        permissionBody.maximumNumberOfLines = 5
+        let revealButton = NSButton(title: "Show This Copy in Finder", target: self, action: #selector(revealCurrentCopy))
+        let checkButton = NSButton(title: "Check Again", target: self, action: #selector(refresh))
+        let permissionActions = NSStackView(views: [revealButton, checkButton, permissionButton])
+        permissionActions.orientation = .horizontal
+        permissionActions.spacing = 8
         let permissionTitle = label("Screen & System Audio Recording", size: 13, weight: .semibold)
         let permissionContent = NSView()
-        [permissionTitle, permissionTop, permissionBody, permissionButton].forEach {
+        [permissionTitle, permissionTop, permissionBody, permissionActions].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             permissionContent.addSubview($0)
         }
@@ -628,9 +688,10 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
             permissionBody.topAnchor.constraint(equalTo: permissionTitle.bottomAnchor, constant: 9),
             permissionBody.leadingAnchor.constraint(equalTo: permissionContent.leadingAnchor),
             permissionBody.trailingAnchor.constraint(equalTo: permissionContent.trailingAnchor),
-            permissionButton.topAnchor.constraint(equalTo: permissionBody.bottomAnchor, constant: 9),
-            permissionButton.trailingAnchor.constraint(equalTo: permissionContent.trailingAnchor),
-            permissionButton.bottomAnchor.constraint(equalTo: permissionContent.bottomAnchor),
+            permissionActions.topAnchor.constraint(equalTo: permissionBody.bottomAnchor, constant: 9),
+            permissionActions.leadingAnchor.constraint(equalTo: permissionContent.leadingAnchor),
+            permissionActions.trailingAnchor.constraint(lessThanOrEqualTo: permissionContent.trailingAnchor),
+            permissionActions.bottomAnchor.constraint(equalTo: permissionContent.bottomAnchor),
         ])
         let permissionCard = card(permissionContent)
 
@@ -641,8 +702,19 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
         shortcutRows.spacing = 6
         let restoreButton = NSButton(title: "Restore Defaults", target: self, action: #selector(restoreShortcuts))
         restoreButton.bezelStyle = .inline
+        let shortcutScroll = NSScrollView()
+        shortcutScroll.hasVerticalScroller = true
+        shortcutScroll.drawsBackground = false
+        shortcutScroll.documentView = shortcutRows
+        shortcutRows.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            shortcutRows.leadingAnchor.constraint(equalTo: shortcutScroll.contentView.leadingAnchor),
+            shortcutRows.trailingAnchor.constraint(equalTo: shortcutScroll.contentView.trailingAnchor),
+            shortcutRows.topAnchor.constraint(equalTo: shortcutScroll.contentView.topAnchor),
+            shortcutScroll.heightAnchor.constraint(equalToConstant: 152),
+        ])
         let shortcutContent = NSView()
-        [shortcutTitle, shortcutSummary, shortcutRows, restoreButton].forEach {
+        [shortcutTitle, shortcutSummary, shortcutScroll, restoreButton].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             shortcutContent.addSubview($0)
         }
@@ -652,10 +724,10 @@ final class ReadinessWindowController: NSWindowController, NSWindowDelegate {
             shortcutSummary.centerYAnchor.constraint(equalTo: shortcutTitle.centerYAnchor),
             shortcutSummary.leadingAnchor.constraint(equalTo: shortcutTitle.trailingAnchor, constant: 10),
             shortcutSummary.trailingAnchor.constraint(lessThanOrEqualTo: shortcutContent.trailingAnchor),
-            shortcutRows.topAnchor.constraint(equalTo: shortcutTitle.bottomAnchor, constant: 8),
-            shortcutRows.leadingAnchor.constraint(equalTo: shortcutContent.leadingAnchor),
-            shortcutRows.trailingAnchor.constraint(equalTo: shortcutContent.trailingAnchor),
-            restoreButton.topAnchor.constraint(equalTo: shortcutRows.bottomAnchor, constant: 8),
+            shortcutScroll.topAnchor.constraint(equalTo: shortcutTitle.bottomAnchor, constant: 8),
+            shortcutScroll.leadingAnchor.constraint(equalTo: shortcutContent.leadingAnchor),
+            shortcutScroll.trailingAnchor.constraint(equalTo: shortcutContent.trailingAnchor),
+            restoreButton.topAnchor.constraint(equalTo: shortcutScroll.bottomAnchor, constant: 8),
             restoreButton.trailingAnchor.constraint(equalTo: shortcutContent.trailingAnchor),
             restoreButton.bottomAnchor.constraint(equalTo: shortcutContent.bottomAnchor),
         ])
