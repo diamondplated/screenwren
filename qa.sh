@@ -53,8 +53,12 @@ validate_bundle() {
     test "$(plutil -extract LSMinimumSystemVersion raw "$main_plist")" = 26.0
     test "$(plutil -extract LSMinimumSystemVersion raw "$helper_plist")" = 26.0
 
-    lipo "$main_executable" -verify_arch arm64 x86_64
-    lipo "$helper_executable" -verify_arch arm64 x86_64
+    # One arch per call: Xcode 27's lipo reads a second arch as a second input file.
+    lipo "$main_executable" -verify_arch arm64
+    lipo "$main_executable" -verify_arch x86_64
+    # One arch per call: Xcode 27's lipo reads a second arch as a second input file.
+    lipo "$helper_executable" -verify_arch arm64
+    lipo "$helper_executable" -verify_arch x86_64
     codesign --verify --strict --verbose=2 "$helper_app"
     codesign --verify --deep --strict --verbose=2 "$app_path"
     test "$(codesign -dv --verbose=4 "$app_path" 2>&1 | sed -n 's/^Identifier=//p')" = \

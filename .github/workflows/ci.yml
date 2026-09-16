@@ -17,7 +17,8 @@ concurrency:
 jobs:
   native:
     name: Swift, bundle, and self-checks
-    runs-on: macos-26
+    runs-on: [self-hosted, macOS, air]
+
     timeout-minutes: 25
 
     steps:

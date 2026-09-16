@@ -94,8 +94,12 @@ test "$HELPER_VERSION" = "$MAIN_VERSION"
 test "$HELPER_BUILD" = "$MAIN_BUILD"
 test "$(plutil -extract LSMinimumSystemVersion raw "$MAIN_PLIST")" = 26.0
 test "$(plutil -extract LSMinimumSystemVersion raw "$HELPER_PLIST")" = 26.0
-lipo "$MAIN_EXECUTABLE" -verify_arch arm64 x86_64
-lipo "$HELPER_EXECUTABLE" -verify_arch arm64 x86_64
+# One arch per call: Xcode 27's lipo reads a second arch as a second input file.
+lipo "$MAIN_EXECUTABLE" -verify_arch arm64
+lipo "$MAIN_EXECUTABLE" -verify_arch x86_64
+# One arch per call: Xcode 27's lipo reads a second arch as a second input file.
+lipo "$HELPER_EXECUTABLE" -verify_arch arm64
+lipo "$HELPER_EXECUTABLE" -verify_arch x86_64
 
 sign_bundle() {
     bundle=$1
