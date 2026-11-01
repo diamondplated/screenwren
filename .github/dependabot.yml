@@ -1,0 +1,31 @@
+# Monthly, grouped, capped: self-hosted CI runs every PR, so keep the volume low.
+# Security updates arrive on their own (grouped below), whatever the schedule.
+version: 2
+updates:
+  - package-ecosystem: swift
+    directories: ["/"]
+    schedule:
+      interval: monthly
+      time: "07:20"
+      timezone: America/Chicago
+    cooldown:
+      default-days: 7
+    open-pull-requests-limit: 3
+    groups:
+      swift-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      swift-minor-patch:
+        update-types: [minor, patch]
+        patterns: ["*"]
+      swift-major:
+        update-types: [major]
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directories: ["/"]
+    schedule: { interval: monthly, time: "07:20", timezone: America/Chicago }
+    cooldown: { default-days: 7 }
+    open-pull-requests-limit: 2
+    groups:
+      actions:
+        patterns: ["*"]
