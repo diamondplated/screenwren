@@ -17,6 +17,8 @@ concurrency:
 jobs:
   native:
     name: Swift, bundle, and self-checks
+    # Public repo: fork PRs must never run on the self-hosted Mac.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, macOS, air]
 
     timeout-minutes: 25
