@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **ScreenWren has moved to [diamondplated/mac-apps](https://github.com/diamondplated/mac-apps/tree/main/ScreenWren) and now ships inside [Mac Tools](https://github.com/diamondplated/mac-tools-releases).**
+> This repository is archived and read-only. The 0.5.0 release here is the last standalone build
+> and is no longer updated; the `screenwren` Homebrew cask has been removed. For the current
+> ScreenWren, install Mac Tools: `brew install --cask diamondplated/tap/mac-tools`.
+
 <p align="center">
   <img src="Resources/ScreenWrenIconMaster.png" width="144" alt="ScreenWren app icon">
 </p>
@@ -32,7 +38,7 @@
 ## Install
 
 ```sh
-brew install --cask diamondplated/tap/screenwren
+brew install --cask diamondplated/tap/mac-tools   # ScreenWren now installs from inside Mac Tools
 ```
 
 Or grab the zip from [Releases](https://github.com/diamondplated/screenwren/releases/latest).
